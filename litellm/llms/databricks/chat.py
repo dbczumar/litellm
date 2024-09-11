@@ -382,7 +382,7 @@ class DatabricksChatCompletion(BaseLLM):
         self,
         model: str,
         messages: list,
-        api_base: str,
+        api_base: Optional[str],
         custom_llm_provider: str,
         custom_prompt_dict: dict,
         model_response: ModelResponse,
