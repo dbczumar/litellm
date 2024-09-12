@@ -7,7 +7,7 @@ import time
 import types
 from enum import Enum
 from functools import partial
-from typing import Any, Callable, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Literal, Optional, Tuple, Union, Dict
 
 import httpx  # type: ignore
 import requests  # type: ignore
@@ -271,6 +271,44 @@ class DatabricksChatCompletion(BaseLLM):
             api_base = "{}/embeddings".format(api_base)
         return api_base, headers
 
+    async def acompletion_function(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
+        custom_llm_provider: str,
+        api_key: Optional[str],
+        api_base: Optional[str],
+        http_handler: Optional[AsyncHTTPHandler],
+        timeout: Optional[Union[float, httpx.Timeout]],
+        custom_endpoint: Optional[bool],
+        headers: Optional[Dict[str, str]],
+    ):
+        databricks_client = get_databricks_model_serving_client_wrapper(
+            synchronous=False,
+            streaming=False,
+            api_key=api_key,
+            api_base=api_base,
+            http_handler=http_handler,
+            timeout=timeout,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )
+        response: ModelResponse = await databricks_client.completion(
+            endpoint_name=model,
+            messages=messages,
+            optional_params=optional_params,
+        )
+
+        base_model: Optional[str] = optional_params.pop("base_model", None)
+
+        response.model = custom_llm_provider + "/" + response.model
+
+        if base_model is not None:
+            response._hidden_params["model"] = base_model
+
+        return response
+
     async def acompletion_stream_function(
         self,
         model: str,
@@ -406,9 +444,11 @@ class DatabricksChatCompletion(BaseLLM):
                     streaming_decoder=streaming_decoder,
                 )
             else:
-                databricks_client = get_databricks_model_serving_client_wrapper(
-                    synchronous=False,
-                    streaming=False,
+                return self.acompletion_function(
+                    model=model,
+                    messages=messages,
+                    optional_params=optional_params,
+                    custom_llm_provider=custom_llm_provider,
                     api_key=api_key,
                     api_base=api_base,
                     http_handler=client,
@@ -416,19 +456,6 @@ class DatabricksChatCompletion(BaseLLM):
                     custom_endpoint=custom_endpoint,
                     headers=headers,
                 )
-                response: ModelResponse = databricks_client.completion(
-                    endpoint_name=model,
-                    messages=messages,
-                    optional_params=optional_params,
-                )
-
-                print("RESPONSE", response)
-                response.model = custom_llm_provider + "/" + response.model
-
-                if base_model is not None:
-                    response._hidden_params["model"] = base_model
-
-                return response
         else:
             if not isinstance(client, HTTPHandler):
                 # Non-sync client passed in, but sync call requested

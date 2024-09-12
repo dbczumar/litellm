@@ -15,9 +15,9 @@ class DatabricksModelServingClientWrapper:
     def completion(
         self,
         endpoint_name: str,
-        messages: Optional[List[Dict[str, str]]] = None,
+        messages: List[Dict[str, str]],
         # litellm params?
-        optional_params: Optional[Dict[str, Any]] = None,
+        optional_params: Dict[str, Any],
     ) -> ModelResponse:
         pass
 
@@ -32,9 +32,9 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
     def completion(
         self,
         endpoint_name: str,
-        messages: Optional[List[Dict[str, str]]] = None,
-        optional_params: Optional[Dict[str, Any]] = None,
+        messages: List[Dict[str, str]],
         # litellm params?
+        optional_params: Dict[str, Any],
     ) -> ModelResponse:
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole, QueryEndpointResponse
 
@@ -108,11 +108,16 @@ class DatabricksModelServingHandlerWrapper:
             "Authorization": f"Bearer {self.api_key}"
         }
 
-    def _prepare_data(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]], optional_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _prepare_data(
+        self,
+        endpoint_name: str, 
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
         return {
             "model": endpoint_name,
             "messages": messages,
-            **(optional_params or {}),
+            **optional_params,
         }
 
     def _handle_errors(self, exception: Exception, response: Optional[httpx.Response]):
@@ -126,7 +131,12 @@ class DatabricksModelServingHandlerWrapper:
 
 class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
 
-    def completion(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]] = None, optional_params: Optional[Dict[str, Any]] = None) -> ModelResponse:
+    def completion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
+    ) -> ModelResponse:
         data = self._prepare_data(endpoint_name, messages, optional_params)
         response = None
         try:
@@ -143,7 +153,12 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
 
 class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
 
-    async def completion(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]] = None, optional_params: Optional[Dict[str, Any]] = None) -> ModelResponse:
+    async def completion(
+        self,
+        endpoint_name: str, 
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any] = None
+    ) -> ModelResponse:
         data = self._prepare_data(endpoint_name, messages, optional_params)
         response = None
         try:
@@ -153,7 +168,6 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
                 data=json.dumps(data)
             )
             response.raise_for_status()
-            print("MODEL RESP", ModelResponse(**response.json()))
             return ModelResponse(**response.json())
         except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
             self._handle_errors(e, response)
