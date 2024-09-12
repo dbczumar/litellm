@@ -9,17 +9,10 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.utils import ModelResponse, Choices
 
 
-class DatabricksModelServingClient:
-    def __init__(self, api_base: Optional[str], api_key: Optional[str], client: HTTPHandler):
-        self.api_base = api_base
-        self.api_key = api_key
-        self.client = client or DatabricksModelServingWorkspaceClient
-
-
 class DatabricksModelServingClientWrapper:
 
     @abstractmethod
-    def completions(
+    def completion(
         self,
         endpoint_name: str,
         messages: Optional[List[Dict[str, str]]] = None,
@@ -29,32 +22,6 @@ class DatabricksModelServingClientWrapper:
         pass
 
 
-def get_databricks_model_serving_client_wrapper(
-    api_base: Optional[str],
-    api_key: Optional[str],
-    http_handler: Optional[HTTPHandler],
-    custom_endpoint: Optional[bool] = False,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: Optional[Union[float, httpx.Timeout]] = None,
-) -> DatabricksModelServingClientWrapper:
-    if (api_base, api_key).count(None) == 1:
-        raise DatabricksError(status_code=400, message="api_base and api_key must be provided together, or both must be empty.")
-
-    if (custom_endpoint is not None or http_handler is not None) and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=400, message="If http_handler or custom_endpoint is provided, api_base and api_key must be provided.")
-
-    if (api_base, api_key).count(None) == 2:
-        return DatabricksModelServingWorkspaceClientWrapper()
-    else:
-        return DatabricksModelServingHTTPHandlerWrapper(
-            api_base=api_base,
-            api_key=api_key,
-            http_handler=http_handler or HTTPHandler(timeout=timeout),
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-        )
-
-
 class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientWrapper):
 
     def __init__(self):
@@ -62,7 +29,7 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
 
         self.client = WorkspaceClient()
 
-    def completions(
+    def completion(
         self,
         endpoint_name: str,
         messages: Optional[List[Dict[str, str]]] = None,
@@ -72,9 +39,9 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole, QueryEndpointResponse
 
         endpoint_response: QueryEndpointResponse = self.client.serving_endpoints.query(
-          name="databricks-meta-llama-3-1-70b-instruct",
+          name=endpoint_name,
           messages=[
-            self. _translate_chat_message_for_query(message) for message in messages
+            self._translate_chat_message_for_query(message) for message in messages
           ],
           **optional_params
         )
@@ -108,68 +75,133 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
             ],
             created=query_response.created,
             model=query_response.model,
-            object=query_response.object.object_type,  # Assuming QueryEndpointResponseObject has object_type
-            system_fingerprint=query_response.served_model_name,  # Mapping served_model_name to system_fingerprint
-            _hidden_params={},  # No direct mapping, so set to empty dictionary
-            _response_headers=None  # No direct mapping, set to None
+            object=query_response.object.value,
+            system_fingerprint=query_response.served_model_name,
+            _hidden_params={},
+            _response_headers=None, 
         )
 
         return model_response
 
 
-class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingClientWrapper):
-
-    def __init__(self, api_base: str, api_key: str, http_handler: HTTPHandler, custom_endpoint: Optional[bool], headers: Optional[Dict[str, str]] = None):
+class DatabricksModelServingHandlerWrapper:
+    def __init__(self, api_base: str, api_key: str, http_handler: Union[HTTPHandler, AsyncHTTPHandler], custom_endpoint: Optional[bool], headers: Optional[Dict[str, str]] = None):
         self.api_base = api_base
         self.api_key = api_key
         self.http_handler = http_handler
-        self.headers = headers
+        self.headers = headers or {}
         self.custom_endpoint = custom_endpoint
 
-    def completions(
-        self,
-        endpoint_name: str,
-        messages: Optional[List[Dict[str, str]]] = None,
-        optional_params: Optional[Dict[str, Any]] = None,
-        # litellm params?
-    ) -> ModelResponse:
+    def _get_api_base(self, endpoint_type: Literal["chat_completions", "embeddings"]) -> str:
+        if self.custom_endpoint:
+            return self.api_base
+        elif endpoint_type == "chat_completions":
+            return f"{self.api_base}/chat/completions"
+        elif endpoint_type == "embeddings":
+            return f"{self.api_base}/embeddings"
+        else:
+            raise DatabricksError(status_code=500, message=f"Invalid endpoint type: {endpoint_type}")
+
+    def _build_headers(self) -> Dict[str, str]:
+        return {
+            **self.headers,
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+    def _prepare_data(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]], optional_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "model": endpoint_name,
+            "messages": messages,
+            **(optional_params or {}),
+        }
+
+    def _handle_errors(self, exception: Exception, response: Optional[httpx.Response]):
+        if isinstance(exception, httpx.HTTPStatusError) and response is not None:
+            raise DatabricksError(status_code=exception.response.status_code, message=response.text)
+        elif isinstance(exception, httpx.TimeoutException):
+            raise DatabricksError(status_code=408, message="Timeout error occurred.")
+        else:
+            raise DatabricksError(status_code=500, message=str(exception))
+
+
+class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
+
+    def completion(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]] = None, optional_params: Optional[Dict[str, Any]] = None) -> ModelResponse:
+        data = self._prepare_data(endpoint_name, messages, optional_params)
+        response = None
         try:
-            data = {
-                "model": endpoint_name,
-                "messages": messages,
-                **optional_params,
-            }
             response = self.http_handler.post(
                 self._get_api_base(endpoint_type="chat_completions"),
-                headers={
-                    **self.headers,
-                    **{
-                        "Authorization": "Bearer {}".format(self.api_key)
-                    }
-                },
+                headers=self._build_headers(),
                 data=json.dumps(data)
             )
             response.raise_for_status()
             return ModelResponse(**response.json())
-        except httpx.HTTPStatusError as e:
-            raise DatabricksError(
-                status_code=e.response.status_code, message=response.text
+        except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
+            self._handle_errors(e, response)
+
+
+class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
+
+    async def completion(self, endpoint_name: str, messages: Optional[List[Dict[str, str]]] = None, optional_params: Optional[Dict[str, Any]] = None) -> ModelResponse:
+        data = self._prepare_data(endpoint_name, messages, optional_params)
+        response = None
+        try:
+            response = await self.http_handler.post(
+                self._get_api_base(endpoint_type="chat_completions"),
+                headers=self._build_headers(),
+                data=json.dumps(data)
             )
-        except httpx.TimeoutException as e:
-            raise DatabricksError(
-                status_code=408, message="Timeout error occurred."
-            )
-        except Exception as e:
-            raise DatabricksError(status_code=500, message=str(e))
-
-    def _get_api_base(self, endpoint_type: Literal["chat_completions", "embeddings"]) -> str:
-        if self.custom_endpoint is True:
-            return self.api_base
-        elif endpoint_type == "chat_completions":
-            return "{}/chat/completions".format(self.api_base)
-        elif endpoint_type == "embeddings":
-            return "{}/embeddings".format(self.api_base)
-        else:
-            raise DatabricksError(status_code=500, message="Invalid endpoint type: {}".format(endpoint_type))
+            response.raise_for_status()
+            return ModelResponse(**response.json())
+        except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
+            self._handle_errors(e, response)
 
 
+def get_databricks_model_serving_client_wrapper(
+    synchronous: bool,
+    streaming: bool,
+    api_base: Optional[str],
+    api_key: Optional[str],
+    http_handler: Optional[Union[HTTPHandler, AsyncHTTPHandler]],
+    timeout: Optional[Union[float, httpx.Timeout]],
+    custom_endpoint: Optional[bool],
+    headers: Optional[Dict[str, str]],
+) -> DatabricksModelServingClientWrapper:
+    if (api_base, api_key).count(None) == 1:
+        raise DatabricksError(status_code=400, message="Databricks API base and API key must both be set, or both must be unset.")
+
+    if custom_endpoint is not None and (api_base, api_key).count(None) > 0:
+        raise DatabricksError(status_code=400, message="If a custom endpoint is specified, Databricks API base and API key must both be set.")
+
+    if (http_handler is not None) and (api_base, api_key).count(None) > 0:
+        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
+
+    if (api_base, api_key).count(None) == 2:
+        if streaming or not synchronous:
+            raise DatabricksError(status_code=500, message="In order to make asynchronous or streaming calls, Databricks API base and API key must both be set.")
+
+        try:
+            import databricks.sdk
+
+            return DatabricksModelServingWorkspaceClientWrapper()
+        except ImportError:
+            raise DatabricksError(status_code=400, message="If Databricks API base and API key are not provided, the databricks-sdk Python library must be installed.")
+    elif synchronous:
+        http_handler = http_handler or HTTPHandler(timeout=timeout)
+        return DatabricksModelServingHTTPHandlerWrapper(
+            api_base=api_base,
+            api_key=api_key,
+            http_handler=http_handler,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )
+    else:
+        async_http_handler = http_handler or AsyncHTTPHandler(timeout=timeout)
+        return DatabricksModelServingAsyncHTTPHandlerWrapper(
+            api_base=api_base,
+            api_key=api_key,
+            http_handler=async_http_handler,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )

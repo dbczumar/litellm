@@ -15,6 +15,8 @@ import requests  # type: ignore
 import litellm
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.llms.databricks.exceptions import DatabricksError
+from litellm.llms.databricks.client import get_databricks_model_serving_client_wrapper, DatabricksModelServingClientWrapper
 from litellm.types.llms.openai import (
     ChatCompletionDeltaChunk,
     ChatCompletionResponseMessage,
@@ -31,17 +33,6 @@ from litellm.utils import CustomStreamWrapper, EmbeddingResponse, ModelResponse,
 
 from ..base import BaseLLM
 from ..prompt_templates.factory import custom_prompt, prompt_factory
-
-
-class DatabricksError(Exception):
-    def __init__(self, status_code, message):
-        self.status_code = status_code
-        self.message = message
-        self.request = httpx.Request(method="POST", url="https://docs.databricks.com/")
-        self.response = httpx.Response(status_code=status_code, request=self.request)
-        super().__init__(
-            self.message
-        )  # Call the base class constructor with the parameters it needs
 
 
 class DatabricksConfig:
@@ -406,13 +397,14 @@ class DatabricksChatCompletion(BaseLLM):
             "custom_endpoint", None
         )
         base_model: Optional[str] = optional_params.pop("base_model", None)
-        api_base, headers = self._validate_environment(
-            api_base=api_base,
-            api_key=api_key,
-            endpoint_type="chat_completions",
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-        )
+        # TODO: Remove this! Need to migrate other APIs first
+        # api_base, headers = self._validate_environment(
+        #     api_base=api_base,
+        #     api_key=api_key,
+        #     endpoint_type="chat_completions",
+        #     custom_endpoint=custom_endpoint,
+        #     headers=headers,
+        # )
         ## Load Config
         config = litellm.DatabricksConfig().get_config()
         for k, v in config.items():
@@ -431,6 +423,7 @@ class DatabricksChatCompletion(BaseLLM):
         }
 
         ## LOGGING
+        # TODO: UPDATE THIS!
         logging_obj.pre_call(
             input=messages,
             api_key=api_key,
@@ -446,7 +439,7 @@ class DatabricksChatCompletion(BaseLLM):
             if (
                 stream is not None and stream is True
             ):  # if function call - fake the streaming (need complete blocks for output parsing in openai format)
-                print_verbose("makes async anthropic streaming POST request")
+                print_verbose("makes async databricks streaming POST request")
                 data["stream"] = stream
                 return self.acompletion_stream_function(
                     model=model,
@@ -490,10 +483,12 @@ class DatabricksChatCompletion(BaseLLM):
                     base_model=base_model,
                 )
         else:
-            if client is None or not isinstance(client, HTTPHandler):
-                client = HTTPHandler(timeout=timeout)  # type: ignore
+            if not isinstance(client, HTTPHandler):
+                client = None
             ## COMPLETION CALL
             if stream is True:
+                client = client or HTTPHandler(timeout=timeout)  # type: ignore
+
                 return CustomStreamWrapper(
                     completion_stream=None,
                     make_call=partial(
@@ -512,32 +507,30 @@ class DatabricksChatCompletion(BaseLLM):
                     logging_obj=logging_obj,
                 )
             else:
-                try:
-                    response = client.post(
-                        api_base, headers=headers, data=json.dumps(data)
-                    )
-                    response.raise_for_status()
+                # TODO: Consider adding an async arg to this function so the developer 
+                # knows whether the completion() call is async or not
+                databricks_client = get_databricks_model_serving_client_wrapper(
+                    synchronous=True,
+                    streaming=False,
+                    api_key=api_key,
+                    api_base=api_base,
+                    http_handler=client,
+                    timeout=timeout,
+                    custom_endpoint=custom_endpoint,
+                    headers=headers,
+                )
+                response: ModelResponse = databricks_client.completion(
+                    endpoint_name=model,
+                    messages=messages,
+                    optional_params=optional_params,
+                )
 
-                    response_json = response.json()
-                except httpx.HTTPStatusError as e:
-                    raise DatabricksError(
-                        status_code=e.response.status_code, message=response.text
-                    )
-                except httpx.TimeoutException as e:
-                    raise DatabricksError(
-                        status_code=408, message="Timeout error occurred."
-                    )
-                except Exception as e:
-                    raise DatabricksError(status_code=500, message=str(e))
+                response.model = custom_llm_provider + "/" + response.model
 
-        response = ModelResponse(**response_json)
+                if base_model is not None:
+                    response._hidden_params["model"] = base_model
 
-        response.model = custom_llm_provider + "/" + response.model
-
-        if base_model is not None:
-            response._hidden_params["model"] = base_model
-
-        return response
+                return response
 
     async def aembedding(
         self,
