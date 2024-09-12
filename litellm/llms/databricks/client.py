@@ -246,11 +246,11 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
 
             if streaming_decoder is not None:
                 return streaming_decoder.iter_bytes(
-                    response.iter_bytes(chunk_size=1024)
+                    response.aiter_bytes(chunk_size=1024)
                 )
             else:
                 return ModelResponseIterator(
-                    streaming_response=response.iter_lines(), sync_stream=True
+                    streaming_response=response.aiter_lines(), sync_stream=True
                 )
 
         return CustomStreamWrapper(
