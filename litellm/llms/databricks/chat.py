@@ -312,63 +312,6 @@ class DatabricksChatCompletion(BaseLLM):
         )
         return streamwrapper
 
-    async def acompletion_function(
-        self,
-        model: str,
-        messages: list,
-        api_base: str,
-        custom_prompt_dict: dict,
-        model_response: ModelResponse,
-        custom_llm_provider: str,
-        print_verbose: Callable,
-        encoding,
-        api_key,
-        logging_obj,
-        stream,
-        data: dict,
-        base_model: Optional[str],
-        optional_params: dict,
-        litellm_params=None,
-        logger_fn=None,
-        headers={},
-        timeout: Optional[Union[float, httpx.Timeout]] = None,
-    ) -> ModelResponse:
-        if timeout is None:
-            timeout = httpx.Timeout(timeout=600.0, connect=5.0)
-
-        self.async_handler = AsyncHTTPHandler(timeout=timeout)
-
-        try:
-            response = await self.async_handler.post(
-                api_base, headers=headers, data=json.dumps(data)
-            )
-            response.raise_for_status()
-
-            response_json = response.json()
-        except httpx.HTTPStatusError as e:
-            raise DatabricksError(
-                status_code=e.response.status_code,
-                message=e.response.text,
-            )
-        except httpx.TimeoutException as e:
-            raise DatabricksError(status_code=408, message="Timeout error occurred.")
-        except Exception as e:
-            raise DatabricksError(status_code=500, message=str(e))
-
-        logging_obj.post_call(
-            input=messages,
-            api_key="",
-            original_response=response_json,
-            additional_args={"complete_input_dict": data},
-        )
-        response = ModelResponse(**response_json)
-
-        response.model = custom_llm_provider + "/" + response.model
-
-        if base_model is not None:
-            response._hidden_params["model"] = base_model
-        return response
-
     def completion(
         self,
         model: str,
@@ -434,7 +377,8 @@ class DatabricksChatCompletion(BaseLLM):
             },
         )
         if acompletion is True:
-            if client is not None and isinstance(client, HTTPHandler):
+            if isinstance(client, AsyncHTTPHandler):
+                # Non-async client passed in, but async call requested
                 client = None
             if (
                 stream is not None and stream is True
@@ -462,30 +406,33 @@ class DatabricksChatCompletion(BaseLLM):
                     streaming_decoder=streaming_decoder,
                 )
             else:
-                return self.acompletion_function(
-                    model=model,
-                    messages=messages,
-                    data=data,
-                    api_base=api_base,
-                    custom_prompt_dict=custom_prompt_dict,
-                    custom_llm_provider=custom_llm_provider,
-                    model_response=model_response,
-                    print_verbose=print_verbose,
-                    encoding=encoding,
+                databricks_client = get_databricks_model_serving_client_wrapper(
+                    synchronous=False,
+                    streaming=False,
                     api_key=api_key,
-                    logging_obj=logging_obj,
-                    optional_params=optional_params,
-                    stream=stream,
-                    litellm_params=litellm_params,
-                    logger_fn=logger_fn,
-                    headers=headers,
+                    api_base=api_base,
+                    http_handler=client,
                     timeout=timeout,
-                    base_model=base_model,
+                    custom_endpoint=custom_endpoint,
+                    headers=headers,
                 )
+                response: ModelResponse = databricks_client.completion(
+                    endpoint_name=model,
+                    messages=messages,
+                    optional_params=optional_params,
+                )
+
+                print("RESPONSE", response)
+                response.model = custom_llm_provider + "/" + response.model
+
+                if base_model is not None:
+                    response._hidden_params["model"] = base_model
+
+                return response
         else:
             if not isinstance(client, HTTPHandler):
+                # Non-sync client passed in, but sync call requested
                 client = None
-            ## COMPLETION CALL
             if stream is True:
                 client = client or HTTPHandler(timeout=timeout)  # type: ignore
 

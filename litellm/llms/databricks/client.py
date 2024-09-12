@@ -153,6 +153,7 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
                 data=json.dumps(data)
             )
             response.raise_for_status()
+            print("MODEL RESP", ModelResponse(**response.json()))
             return ModelResponse(**response.json())
         except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
             self._handle_errors(e, response)
