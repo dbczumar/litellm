@@ -13,15 +13,92 @@ from litellm.types.utils import CustomStreamingDecoder
 
 class DatabricksModelServingClientWrapper:
 
-    @abstractmethod
     def completion(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
         # litellm params?
         optional_params: Dict[str, Any],
+        stream: bool,
+    ) -> ModelResponse:
+        if stream:
+            return self._streaming_completion(endpoint_name, messages, optional_params)
+        else:
+            return self._completion(endpoint_name, messages, optional_params)
+
+    @abstractmethod
+    def _completion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
     ) -> ModelResponse:
         pass
+
+    @abstractmethod
+    def _streaming_completion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
+    ) -> CustomStreamWrapper:
+        pass
+
+
+def get_databricks_model_serving_client_wrapper(
+    synchronous: bool,
+    custom_llm_provider: str,
+    logging_obj,
+    api_base: Optional[str],
+    api_key: Optional[str],
+    http_handler: Optional[Union[HTTPHandler, AsyncHTTPHandler]],
+    timeout: Optional[Union[float, httpx.Timeout]],
+    custom_endpoint: Optional[bool],
+    headers: Optional[Dict[str, str]],
+    streaming_decoder: Optional[CustomStreamingDecoder],
+) -> DatabricksModelServingClientWrapper:
+    if (api_base, api_key).count(None) == 1:
+        raise DatabricksError(status_code=400, message="Databricks API base and API key must both be set, or both must be unset.")
+
+    if custom_endpoint is not None and (api_base, api_key).count(None) > 0:
+        raise DatabricksError(status_code=400, message="If a custom endpoint is specified, Databricks API base and API key must both be set.")
+
+    if (http_handler is not None) and (api_base, api_key).count(None) > 0:
+        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
+
+    if (api_base, api_key).count(None) == 2:
+        if not synchronous:
+            raise DatabricksError(status_code=500, message="In order to make asynchronous calls, Databricks API base and API key must both be set.")
+
+        try:
+            import databricks.sdk
+
+            return DatabricksModelServingWorkspaceClientWrapper()
+        except ImportError:
+            raise DatabricksError(status_code=400, message="If Databricks API base and API key are not provided, the databricks-sdk Python library must be installed.")
+    elif synchronous:
+        http_handler = http_handler or HTTPHandler(timeout=timeout)
+        return DatabricksModelServingHTTPHandlerWrapper(
+            api_base=api_base,
+            api_key=api_key,
+            http_handler=http_handler,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+            streaming_decoder=streaming_decoder,
+        )
+    else:
+        async_http_handler = http_handler or AsyncHTTPHandler(timeout=timeout)
+        return DatabricksModelServingAsyncHTTPHandlerWrapper(
+            api_base=api_base,
+            api_key=api_key,
+            http_handler=async_http_handler,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )
 
 
 class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientWrapper):
@@ -31,7 +108,7 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
 
         self.client = WorkspaceClient()
 
-    def completion(
+    def _completion(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
@@ -48,6 +125,15 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
           **optional_params
         )
         return self._translate_endpoint_query_response_to_model_response(endpoint_response)
+
+    def _streaming_completion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        # litellm params?
+        optional_params: Dict[str, Any],
+    ) -> CustomStreamWrapper:
+        raise DatabricksError(status_code=500, message="In order to make asynchronous or streaming calls, Databricks API base and API key must both be set.")
 
     def _translate_chat_message_for_query(self, message: Dict[str, str]) -> 'ChatMessage':
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
@@ -86,13 +172,26 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         return model_response
 
 
-class DatabricksModelServingHandlerWrapper:
-    def __init__(self, api_base: str, api_key: str, http_handler: Union[HTTPHandler, AsyncHTTPHandler], custom_endpoint: Optional[bool], headers: Optional[Dict[str, str]] = None):
+class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
+    def __init__(
+        self,
+        api_base: str,
+        api_key: str,
+        http_handler: Union[HTTPHandler, AsyncHTTPHandler],
+        custom_llm_provider: str,
+        logging_obj,
+        custom_endpoint: Optional[bool],
+        headers: Optional[Dict[str, str]] = None,
+        streaming_decoder: Optional[CustomStreamingDecoder] = None,
+    ):
         self.api_base = api_base
         self.api_key = api_key
         self.http_handler = http_handler
         self.headers = headers or {}
         self.custom_endpoint = custom_endpoint
+        self.streaming_decoder = streaming_decoder
+        self.custom_llm_provider = custom_llm_provider
+        self.logging_obj = logging_obj
 
     def _get_api_base(self, endpoint_type: Literal["chat_completions", "embeddings"]) -> str:
         if self.custom_endpoint:
@@ -133,15 +232,17 @@ class DatabricksModelServingHandlerWrapper:
 
 class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
 
-    def completion(
+    def _completion(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
+        streaming: bool,
     ) -> ModelResponse:
         data = self._prepare_data(endpoint_name, messages, optional_params)
         response = None
         try:
+            print(self._build_headers())
             response = self.http_handler.post(
                 self._get_api_base(endpoint_type="chat_completions"),
                 headers=self._build_headers(),
@@ -152,16 +253,11 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
             self._handle_errors(e, response)
 
-    def streaming_completion(
+    def _streaming_completion(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
-        # TODO: Move this into the wrapper constructor
-        custom_llm_provider: str,
-        # TODO: Move this into the wrapper constructor
-        logging_obj,
-        streaming_decoder: Optional[CustomStreamingDecoder],
     ):
         data = self._prepare_data(endpoint_name, messages, optional_params)
 
@@ -178,8 +274,8 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
             except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
                 self._handle_errors(e, response)
 
-            if streaming_decoder is not None:
-                return streaming_decoder.iter_bytes(
+            if self.streaming_decoder is not None:
+                return self.streaming_decoder.iter_bytes(
                     response.iter_bytes(chunk_size=1024)
                 )
             else:
@@ -191,14 +287,14 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
             completion_stream=None,
             make_call=make_call,
             model=endpoint_name,
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
+            custom_llm_provider=self.custom_llm_provider,
+            logging_obj=self.logging_obj,
         )
 
 
 class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
 
-    async def completion(
+    async def _completion(
         self,
         endpoint_name: str, 
         messages: List[Dict[str, str]],
@@ -218,16 +314,11 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
             self._handle_errors(e, response)
 
 
-    async def streaming_completion(
+    async def _streaming_completion(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
-        # TODO: Move this into the wrapper constructor
-        custom_llm_provider: str,
-        # TODO: Move this into the wrapper constructor
-        logging_obj,
-        streaming_decoder: Optional[CustomStreamingDecoder],
     ):
         data = self._prepare_data(endpoint_name, messages, optional_params)
 
@@ -244,8 +335,8 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
             except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
                 self._handle_errors(e, response)
 
-            if streaming_decoder is not None:
-                return streaming_decoder.iter_bytes(
+            if self.streaming_decoder is not None:
+                return self.streaming_decoder.iter_bytes(
                     response.aiter_bytes(chunk_size=1024)
                 )
             else:
@@ -257,55 +348,6 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
             completion_stream=None,
             make_call=make_call,
             model=endpoint_name,
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
-        )
-
-
-def get_databricks_model_serving_client_wrapper(
-    synchronous: bool,
-    streaming: bool,
-    api_base: Optional[str],
-    api_key: Optional[str],
-    http_handler: Optional[Union[HTTPHandler, AsyncHTTPHandler]],
-    timeout: Optional[Union[float, httpx.Timeout]],
-    custom_endpoint: Optional[bool],
-    headers: Optional[Dict[str, str]],
-) -> DatabricksModelServingClientWrapper:
-    if (api_base, api_key).count(None) == 1:
-        raise DatabricksError(status_code=400, message="Databricks API base and API key must both be set, or both must be unset.")
-
-    if custom_endpoint is not None and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=400, message="If a custom endpoint is specified, Databricks API base and API key must both be set.")
-
-    if (http_handler is not None) and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
-
-    if (api_base, api_key).count(None) == 2:
-        if streaming or not synchronous:
-            raise DatabricksError(status_code=500, message="In order to make asynchronous or streaming calls, Databricks API base and API key must both be set.")
-
-        try:
-            import databricks.sdk
-
-            return DatabricksModelServingWorkspaceClientWrapper()
-        except ImportError:
-            raise DatabricksError(status_code=400, message="If Databricks API base and API key are not provided, the databricks-sdk Python library must be installed.")
-    elif synchronous:
-        http_handler = http_handler or HTTPHandler(timeout=timeout)
-        return DatabricksModelServingHTTPHandlerWrapper(
-            api_base=api_base,
-            api_key=api_key,
-            http_handler=http_handler,
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-        )
-    else:
-        async_http_handler = http_handler or AsyncHTTPHandler(timeout=timeout)
-        return DatabricksModelServingAsyncHTTPHandlerWrapper(
-            api_base=api_base,
-            api_key=api_key,
-            http_handler=async_http_handler,
-            custom_endpoint=custom_endpoint,
-            headers=headers,
+            custom_llm_provider=self.custom_llm_provider,
+            logging_obj=self.logging_obj,
         )

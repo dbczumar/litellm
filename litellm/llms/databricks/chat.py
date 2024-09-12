@@ -198,27 +198,32 @@ class DatabricksChatCompletion(BaseLLM):
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
         custom_llm_provider: str,
+        logging_obj,
         api_key: Optional[str],
         api_base: Optional[str],
         http_handler: Optional[AsyncHTTPHandler],
         timeout: Optional[Union[float, httpx.Timeout]],
         custom_endpoint: Optional[bool],
         headers: Optional[Dict[str, str]],
+        streaming_decoder: Optional[CustomStreamingDecoder] = None,
     ):
         databricks_client = get_databricks_model_serving_client_wrapper(
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
             synchronous=False,
-            streaming=False,
             api_key=api_key,
             api_base=api_base,
             http_handler=http_handler,
             timeout=timeout,
             custom_endpoint=custom_endpoint,
             headers=headers,
+            streaming_decoder=streaming_decoder,
         )
         response: ModelResponse = await databricks_client.completion(
             endpoint_name=model,
             messages=messages,
             optional_params=optional_params,
+            stream=False,
         )
 
         base_model: Optional[str] = optional_params.pop("base_model", None)
@@ -246,23 +251,23 @@ class DatabricksChatCompletion(BaseLLM):
         streaming_decoder: Optional[CustomStreamingDecoder] = None,
     ) -> CustomStreamWrapper:
         databricks_client = get_databricks_model_serving_client_wrapper(
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
             synchronous=False,
             # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
-            streaming=True,
             api_key=api_key,
             api_base=api_base,
             http_handler=http_handler,
             timeout=timeout,
             custom_endpoint=custom_endpoint,
             headers=headers,
+            streaming_decoder=streaming_decoder,
         )
-        response = await databricks_client.streaming_completion(
+        response = await databricks_client.completion(
             endpoint_name=model,
             messages=messages,
             optional_params=optional_params,
-            streaming_decoder=streaming_decoder,
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
+            stream=True,
         )
         return response
 
@@ -351,6 +356,7 @@ class DatabricksChatCompletion(BaseLLM):
                     messages=messages,
                     optional_params=optional_params,
                     custom_llm_provider=custom_llm_provider,
+                    logging_obj=logging_obj,
                     api_key=api_key,
                     api_base=api_base,
                     http_handler=client,
@@ -366,39 +372,44 @@ class DatabricksChatCompletion(BaseLLM):
                 client = client or HTTPHandler(timeout=timeout)  # type: ignore
 
                 databricks_client = get_databricks_model_serving_client_wrapper(
+                    custom_llm_provider=custom_llm_provider,
+                    logging_obj=logging_obj,
                     synchronous=True,
                     # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
-                    streaming=True,
                     api_key=api_key,
                     api_base=api_base,
                     http_handler=client,
                     timeout=timeout,
                     custom_endpoint=custom_endpoint,
                     headers=headers,
+                    streaming_decoder=streaming_decoder,
                 )
-                return databricks_client.streaming_completion(
+                return databricks_client.completion(
                     endpoint_name=model,
                     messages=messages,
                     optional_params=optional_params,
-                    streaming_decoder=streaming_decoder,
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
+                    # custom_llm_provider=custom_llm_provider,
+                    # logging_obj=logging_obj,
+                    stream=True,
                 )
             else:
                 databricks_client = get_databricks_model_serving_client_wrapper(
+                    custom_llm_provider=custom_llm_provider,
+                    logging_obj=logging_obj,
                     synchronous=True,
-                    streaming=False,
                     api_key=api_key,
                     api_base=api_base,
                     http_handler=client,
                     timeout=timeout,
                     custom_endpoint=custom_endpoint,
                     headers=headers,
+                    streaming_decoder=streaming_decoder,
                 )
                 response: ModelResponse = databricks_client.completion(
                     endpoint_name=model,
                     messages=messages,
                     optional_params=optional_params,
+                    stream=False,
                 )
 
                 response.model = custom_llm_provider + "/" + response.model
