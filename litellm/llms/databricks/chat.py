@@ -294,14 +294,7 @@ class DatabricksChatCompletion(BaseLLM):
             "custom_endpoint", None
         )
         base_model: Optional[str] = optional_params.pop("base_model", None)
-        # TODO: Remove this! Need to migrate other APIs first
-        # api_base, headers = self._validate_environment(
-        #     api_base=api_base,
-        #     api_key=api_key,
-        #     endpoint_type="chat_completions",
-        #     custom_endpoint=custom_endpoint,
-        #     headers=headers,
-        # )
+
         ## Load Config
         config = litellm.DatabricksConfig().get_config()
         for k, v in config.items():
@@ -338,7 +331,6 @@ class DatabricksChatCompletion(BaseLLM):
                 stream is not None and stream is True
             ):  # if function call - fake the streaming (need complete blocks for output parsing in openai format)
                 print_verbose("makes async databricks streaming POST request")
-                data["stream"] = stream
                 return self.acompletion_stream_function(
                     model=model,
                     messages=messages,
