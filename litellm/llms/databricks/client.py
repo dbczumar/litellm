@@ -211,7 +211,7 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
 
     def _prepare_data(
         self,
-        endpoint_name: str, 
+        endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> Dict[str, Any]:
@@ -237,7 +237,6 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
-        streaming: bool,
     ) -> ModelResponse:
         data = self._prepare_data(endpoint_name, messages, optional_params)
         response = None
