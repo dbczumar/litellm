@@ -151,78 +151,6 @@ class DatabricksEmbeddingConfig:
         return optional_params
 
 
-async def make_call(
-    client: AsyncHTTPHandler,
-    api_base: str,
-    headers: dict,
-    data: str,
-    model: str,
-    messages: list,
-    logging_obj,
-    streaming_decoder: Optional[CustomStreamingDecoder] = None,
-):
-    response = await client.post(api_base, headers=headers, data=data, stream=True)
-
-    if response.status_code != 200:
-        raise DatabricksError(status_code=response.status_code, message=response.text)
-
-    if streaming_decoder is not None:
-        completion_stream: Any = streaming_decoder.aiter_bytes(
-            response.aiter_bytes(chunk_size=1024)
-        )
-    else:
-        completion_stream = ModelResponseIterator(
-            streaming_response=response.aiter_lines(), sync_stream=False
-        )
-    # LOGGING
-    logging_obj.post_call(
-        input=messages,
-        api_key="",
-        original_response=completion_stream,  # Pass the completion stream for logging
-        additional_args={"complete_input_dict": data},
-    )
-
-    return completion_stream
-
-
-def make_sync_call(
-    client: Optional[HTTPHandler],
-    api_base: str,
-    headers: dict,
-    data: str,
-    model: str,
-    messages: list,
-    logging_obj,
-    streaming_decoder: Optional[CustomStreamingDecoder] = None,
-):
-    if client is None:
-        client = HTTPHandler()  # Create a new client if none provided
-
-    response = client.post(api_base, headers=headers, data=data, stream=True)
-
-    if response.status_code != 200:
-        raise DatabricksError(status_code=response.status_code, message=response.read())
-
-    if streaming_decoder is not None:
-        completion_stream = streaming_decoder.iter_bytes(
-            response.iter_bytes(chunk_size=1024)
-        )
-    else:
-        completion_stream = ModelResponseIterator(
-            streaming_response=response.iter_lines(), sync_stream=True
-        )
-
-    # LOGGING
-    logging_obj.post_call(
-        input=messages,
-        api_key="",
-        original_response="first stream response received",
-        additional_args={"complete_input_dict": data},
-    )
-
-    return completion_stream
-
-
 class DatabricksChatCompletion(BaseLLM):
     def __init__(self) -> None:
         super().__init__()
@@ -305,43 +233,38 @@ class DatabricksChatCompletion(BaseLLM):
     async def acompletion_stream_function(
         self,
         model: str,
-        messages: list,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
         custom_llm_provider: str,
-        api_base: str,
-        custom_prompt_dict: dict,
-        model_response: ModelResponse,
-        print_verbose: Callable,
-        encoding,
-        api_key,
         logging_obj,
-        stream,
-        data: dict,
-        optional_params=None,
-        litellm_params=None,
-        logger_fn=None,
-        headers={},
-        client: Optional[AsyncHTTPHandler] = None,
+        api_key: Optional[str],
+        api_base: Optional[str],
+        http_handler: Optional[AsyncHTTPHandler],
+        timeout: Optional[Union[float, httpx.Timeout]],
+        custom_endpoint: Optional[bool],
+        headers: Optional[Dict[str, str]],
         streaming_decoder: Optional[CustomStreamingDecoder] = None,
     ) -> CustomStreamWrapper:
-
-        data["stream"] = True
-        streamwrapper = CustomStreamWrapper(
-            completion_stream=None,
-            make_call=partial(
-                make_call,
-                api_base=api_base,
-                headers=headers,
-                data=json.dumps(data),
-                model=model,
-                messages=messages,
-                logging_obj=logging_obj,
-                streaming_decoder=streaming_decoder,
-            ),
-            model=model,
+        databricks_client = get_databricks_model_serving_client_wrapper(
+            synchronous=False,
+            # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
+            streaming=True,
+            api_key=api_key,
+            api_base=api_base,
+            http_handler=http_handler,
+            timeout=timeout,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )
+        response = await databricks_client.streaming_completion(
+            endpoint_name=model,
+            messages=messages,
+            optional_params=optional_params,
+            streaming_decoder=streaming_decoder,
             custom_llm_provider=custom_llm_provider,
             logging_obj=logging_obj,
         )
-        return streamwrapper
+        return response
 
     def completion(
         self,
@@ -419,21 +342,15 @@ class DatabricksChatCompletion(BaseLLM):
                 return self.acompletion_stream_function(
                     model=model,
                     messages=messages,
-                    data=data,
-                    api_base=api_base,
-                    custom_prompt_dict=custom_prompt_dict,
-                    model_response=model_response,
-                    print_verbose=print_verbose,
-                    encoding=encoding,
-                    api_key=api_key,
-                    logging_obj=logging_obj,
                     optional_params=optional_params,
-                    stream=stream,
-                    litellm_params=litellm_params,
-                    logger_fn=logger_fn,
-                    headers=headers,
-                    client=client,
                     custom_llm_provider=custom_llm_provider,
+                    logging_obj=logging_obj,
+                    api_key=api_key,
+                    api_base=api_base,
+                    http_handler=client,
+                    timeout=timeout,
+                    custom_endpoint=custom_endpoint,
+                    headers=headers,
                     streaming_decoder=streaming_decoder,
                 )
             else:
@@ -459,7 +376,7 @@ class DatabricksChatCompletion(BaseLLM):
                 databricks_client = get_databricks_model_serving_client_wrapper(
                     synchronous=True,
                     # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
-                    streaming=False,
+                    streaming=True,
                     api_key=api_key,
                     api_base=api_base,
                     http_handler=client,

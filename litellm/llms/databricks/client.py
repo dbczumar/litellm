@@ -157,6 +157,7 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         endpoint_name: str,
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
+        # TODO: Move this into the wrapper constructor
         custom_llm_provider: str,
         # TODO: Move this into the wrapper constructor
         logging_obj,
@@ -164,10 +165,10 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
     ):
         data = self._prepare_data(endpoint_name, messages, optional_params)
 
-        def get_streaming_response():
+        def make_call(client: HTTPHandler):
             response = None
             try:
-                response = self.http_handler.post(
+                response = client.post(
                     self._get_api_base(endpoint_type="chat_completions"),
                     headers=self._build_headers(),
                     data=json.dumps(data),
@@ -186,10 +187,9 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
                     streaming_response=response.iter_lines(), sync_stream=True
                 )
 
-        print("CUSTOM LLM PROVIDER", custom_llm_provider)
         return CustomStreamWrapper(
             completion_stream=None,
-            make_call=get_streaming_response,
+            make_call=make_call,
             model=endpoint_name,
             custom_llm_provider=custom_llm_provider,
             logging_obj=logging_obj,
@@ -216,6 +216,50 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
             return ModelResponse(**response.json())
         except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
             self._handle_errors(e, response)
+
+
+    async def streaming_completion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        optional_params: Dict[str, Any],
+        # TODO: Move this into the wrapper constructor
+        custom_llm_provider: str,
+        # TODO: Move this into the wrapper constructor
+        logging_obj,
+        streaming_decoder: Optional[CustomStreamingDecoder],
+    ):
+        data = self._prepare_data(endpoint_name, messages, optional_params)
+
+        async def make_call(client: AsyncHTTPHandler):
+            response = None
+            try:
+                response = await client.post(
+                    self._get_api_base(endpoint_type="chat_completions"),
+                    headers=self._build_headers(),
+                    data=json.dumps(data),
+                    stream=True
+                )
+                response.raise_for_status()
+            except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
+                self._handle_errors(e, response)
+
+            if streaming_decoder is not None:
+                return streaming_decoder.iter_bytes(
+                    response.iter_bytes(chunk_size=1024)
+                )
+            else:
+                return ModelResponseIterator(
+                    streaming_response=response.iter_lines(), sync_stream=True
+                )
+
+        return CustomStreamWrapper(
+            completion_stream=None,
+            make_call=make_call,
+            model=endpoint_name,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+        )
 
 
 def get_databricks_model_serving_client_wrapper(
