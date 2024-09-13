@@ -6,12 +6,17 @@ import httpx  # type: ignore
 
 from litellm.llms.databricks.exceptions import DatabricksError
 from litellm.llms.databricks.streaming_utils import ModelResponseIterator
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.utils import ModelResponse, Choices, CustomStreamWrapper
 from litellm.types.utils import CustomStreamingDecoder
 
 
 class DatabricksModelServingClientWrapper:
+    """
+    A wrapper around a Databricks Model Serving API client that exposes inference APIs
+    (e.g. chat completion).
+    """
 
     def completion(
         self,
@@ -20,6 +25,18 @@ class DatabricksModelServingClientWrapper:
         optional_params: Dict[str, Any],
         stream: bool,
     ) -> ModelResponse:
+        """
+        Send a synchronous chat completion request to a Databricks Model Serving endpoint and
+        retrieve a response.
+
+        Args:
+            endpoint_name (str): The name of the endpoint to query.
+            messages (List[Dict[str, str]]): The list of messages (chat history) to send to the
+                                             endpoint.
+            optional_params (Dict[str, Any]): Optional parameters to include in the request (e.g.
+                                              temperature, max_tokens, etc.).
+            stream (bool): Whether or not to return a streaming response.
+        """
         if stream:
             return self._streaming_completion(endpoint_name, messages, optional_params)
         else:
@@ -32,6 +49,19 @@ class DatabricksModelServingClientWrapper:
         optional_params: Dict[str, Any],
         stream: bool,
     ) -> ModelResponse:
+        """
+        Send an asynchronous chat completion request to a Databricks Model Serving endpoint and
+        retrieve a response.
+
+        Args:
+            endpoint_name (str): The name of the endpoint to query.
+            messages (List[Dict[str, str]]): The list of messages (chat history) to send to the
+                                             endpoint.
+            optional_params (Dict[str, Any]): Optional parameters to include in the request (e.g.
+                                              temperature, max_tokens, etc.).
+            stream (bool): Whether or not to return a streaming response.
+        """
+
         if stream:
             return await self._streaming_completion(endpoint_name, messages, optional_params)
         else:
@@ -44,6 +74,10 @@ class DatabricksModelServingClientWrapper:
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> ModelResponse:
+        """
+        Base method for sending a synchronous chat completion request to a Databricks Model Serving
+        endpoint and retrieving a response. This method should be implemented by subclasses.
+        """
         pass
 
     @abstractmethod
@@ -53,13 +87,17 @@ class DatabricksModelServingClientWrapper:
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> CustomStreamWrapper:
+        """
+        Base method for sending an asynchronous chat completion request to a Databricks Model
+        Serving endpoint and retrieving a response. This method should be implemented by subclasses.
+        """
         pass
 
 
 def get_databricks_model_serving_client_wrapper(
-    synchronous: bool,
+    support_async: bool,
     custom_llm_provider: str,
-    logging_obj,
+    logging_obj: LiteLLMLoggingObj,
     api_base: Optional[str],
     api_key: Optional[str],
     http_handler: Optional[Union[HTTPHandler, AsyncHTTPHandler]],
@@ -68,6 +106,31 @@ def get_databricks_model_serving_client_wrapper(
     headers: Optional[Dict[str, str]],
     streaming_decoder: Optional[CustomStreamingDecoder],
 ) -> DatabricksModelServingClientWrapper:
+    """
+    Obtain a wrapper around a Databricks Model Serving API client that exposes inference APIs
+    (e.g. chat completion). The wrapper is constructed with the provided configuration.
+
+    Args:
+        support_async (bool): Indicates whether the wrapper needs to support asynchronous execution.
+        custom_llm_provider (str): The name of the custom LLM provider (typically "Databricks").
+        logging_obj (object): The logging object to use for logging.
+        api_base (Optional[str]): The base URL of the Databricks Model Serving API. If not provided,
+            the Databricks SDK will be used to automatically retrieve the API key and base URL
+            from the current environment. If `api_base` is provided, `api_key` must also be provided.
+        api_key (Optional[str]): The API key to use for authentication. If not provided, the
+            Databricks SDK  will automatically retrieve the API key and base URL from the current
+            environment. If `api_base` is provided, `api_key` must also be provided.
+        http_handler (Optional[Union[HTTPHandler, AsyncHTTPHandler]]): The HTTP handler to use for
+            requests. If an HTTP handler is provided, `api_base` and `api_key` must also be
+            provided. If not provided, a default HTTP handler will be used.
+        timeout (Optional[Union[float, httpx.Timeout]]): The timeout to use for requests.
+        custom_endpoint (Optional[bool]): Indicates whether a custom endpoint is being used. If
+            `custom_endpoint` is `True`, `api_base` and `api_key` must be provided.
+        headers (Optional[Dict[str, str]]): Additional headers to include in requests.
+        streaming_decoder (Optional[CustomStreamingDecoder]): The decoder to use for
+            processing streaming responses.
+
+    """
     if (api_base, api_key).count(None) == 1:
         raise DatabricksError(status_code=400, message="Databricks API base and API key must both be set, or both must be unset.")
 
@@ -77,12 +140,11 @@ def get_databricks_model_serving_client_wrapper(
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
         raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
 
-    if (api_base, api_key).count(None) == 2 and timeout is None:
-        # If no API base or API key is provided, and no timeout is provided, we will use the
-        # Databricks SDK, which can automatically retrieve an API key and API base configuration
-        # from the current environment. The Databricks SDK does not support user-specified timeouts
-        # or asynchronous calls.
-        if not synchronous:
+    if (api_base, api_key).count(None) == 2:
+        # If no API base or API key is provided we will use the Databricks SDK, which can
+        # automatically retrieve an API key and API base configuration from the current environment.
+        # The Databricks SDK does not support streaming or asynchronous calls.
+        if support_async:
             raise DatabricksError(status_code=400, message="In order to make asynchronous calls, Databricks API base and API key must both be set.")
 
         try:
@@ -91,7 +153,18 @@ def get_databricks_model_serving_client_wrapper(
             return DatabricksModelServingWorkspaceClientWrapper()
         except ImportError:
             raise DatabricksError(status_code=400, message="If Databricks API base and API key are not provided, the databricks-sdk Python library must be installed.")
-    elif synchronous:
+    elif support_async:
+        async_http_handler = http_handler if isinstance(http_handler, AsyncHTTPHandler) else AsyncHTTPHandler(timeout=timeout)
+        return DatabricksModelServingAsyncHTTPHandlerWrapper(
+            api_base=api_base,
+            api_key=api_key,
+            http_handler=async_http_handler,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+        )
+    else:
         http_handler = http_handler if isinstance(http_handler, HTTPHandler) else HTTPHandler(timeout=timeout)
         return DatabricksModelServingHTTPHandlerWrapper(
             api_base=api_base,
@@ -103,20 +176,18 @@ def get_databricks_model_serving_client_wrapper(
             headers=headers,
             streaming_decoder=streaming_decoder,
         )
-    else:
-        async_http_handler = http_handler if isinstance(http_handler, AsyncHTTPHandler) else AsyncHTTPHandler(timeout=timeout)
-        return DatabricksModelServingAsyncHTTPHandlerWrapper(
-            api_base=api_base,
-            api_key=api_key,
-            http_handler=async_http_handler,
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-        )
 
 
 class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientWrapper):
+    """
+    A wrapper around the Databricks Model Serving API client that uses the Databricks SDK to
+    make inference calls. This wrapper is used when the Databricks API base and API key are not
+    provided, and the Databricks SDK is used to automatically retrieve the API key and base URL
+    from the current environment.
+
+    The Databricks SDK does not support asynchronous calls or streaming, so this wrapper is only
+    used for synchronous, non-streaming calls.
+    """
 
     def __init__(self):
         from databricks.sdk import WorkspaceClient
@@ -190,7 +261,7 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
         api_key: str,
         http_handler: Union[HTTPHandler, AsyncHTTPHandler],
         custom_llm_provider: str,
-        logging_obj,
+        logging_obj: LiteLLMLoggingObj,
         custom_endpoint: Optional[bool],
         headers: Optional[Dict[str, str]] = None,
         streaming_decoder: Optional[CustomStreamingDecoder] = None,

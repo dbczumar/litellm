@@ -201,7 +201,7 @@ class DatabricksChatCompletion(BaseLLM):
         databricks_client = get_databricks_model_serving_client_wrapper(
             custom_llm_provider=custom_llm_provider,
             logging_obj=logging_obj,
-            synchronous=(acompletion is not True),
+            support_async=acompletion,
             api_key=api_key,
             api_base=api_base,
             http_handler=client,
@@ -215,7 +215,7 @@ class DatabricksChatCompletion(BaseLLM):
             optional_params.setdefault(k, v)
         stream: bool = optional_params.get("stream", False)
         optional_params["stream"] = stream
-        
+
         emit_log_event(log_fn=logging_obj.pre_call)
 
         def format_response(response: ModelResponse):
