@@ -26,6 +26,19 @@ class DatabricksModelServingClientWrapper:
         else:
             return self._completion(endpoint_name, messages, optional_params)
 
+    async def acompletion(
+        self,
+        endpoint_name: str,
+        messages: List[Dict[str, str]],
+        # litellm params?
+        optional_params: Dict[str, Any],
+        stream: bool,
+    ) -> ModelResponse:
+        if stream:
+            return await self._streaming_completion(endpoint_name, messages, optional_params)
+        else:
+            return await self._completion(endpoint_name, messages, optional_params)
+
     @abstractmethod
     def _completion(
         self,
@@ -77,7 +90,7 @@ def get_databricks_model_serving_client_wrapper(
         except ImportError:
             raise DatabricksError(status_code=400, message="If Databricks API base and API key are not provided, the databricks-sdk Python library must be installed.")
     elif synchronous:
-        http_handler = http_handler or HTTPHandler(timeout=timeout)
+        http_handler = http_handler if isinstance(http_handler, HTTPHandler) else HTTPHandler(timeout=timeout)
         return DatabricksModelServingHTTPHandlerWrapper(
             api_base=api_base,
             api_key=api_key,
@@ -89,7 +102,7 @@ def get_databricks_model_serving_client_wrapper(
             streaming_decoder=streaming_decoder,
         )
     else:
-        async_http_handler = http_handler or AsyncHTTPHandler(timeout=timeout)
+        async_http_handler = http_handler if isinstance(http_handler, AsyncHTTPHandler) else AsyncHTTPHandler(timeout=timeout)
         return DatabricksModelServingAsyncHTTPHandlerWrapper(
             api_base=api_base,
             api_key=api_key,

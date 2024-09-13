@@ -155,122 +155,6 @@ class DatabricksChatCompletion(BaseLLM):
     def __init__(self) -> None:
         super().__init__()
 
-    # makes headers for API call
-
-    def _validate_environment(
-        self,
-        api_key: Optional[str],
-        api_base: Optional[str],
-        endpoint_type: Literal["chat_completions", "embeddings"],
-        custom_endpoint: Optional[bool],
-        headers: Optional[dict],
-    ) -> Tuple[str, dict]:
-        if api_key is None and headers is None:
-            raise DatabricksError(
-                status_code=400,
-                message="Missing API Key - A call is being made to LLM Provider but no key is set either in the environment variables ({LLM_PROVIDER}_API_KEY) or via params",
-            )
-
-        if api_base is None:
-            raise DatabricksError(
-                status_code=400,
-                message="Missing API Base - A call is being made to LLM Provider but no api base is set either in the environment variables ({LLM_PROVIDER}_API_KEY) or via params",
-            )
-
-        if headers is None:
-            headers = {
-                "Authorization": "Bearer {}".format(api_key),
-                "Content-Type": "application/json",
-            }
-        else:
-            if api_key is not None:
-                headers.update({"Authorization": "Bearer {}".format(api_key)})
-
-        if endpoint_type == "chat_completions" and custom_endpoint is not True:
-            api_base = "{}/chat/completions".format(api_base)
-        elif endpoint_type == "embeddings" and custom_endpoint is not True:
-            api_base = "{}/embeddings".format(api_base)
-        return api_base, headers
-
-    async def acompletion_function(
-        self,
-        model: str,
-        messages: List[Dict[str, str]],
-        optional_params: Dict[str, Any],
-        custom_llm_provider: str,
-        logging_obj,
-        api_key: Optional[str],
-        api_base: Optional[str],
-        http_handler: Optional[AsyncHTTPHandler],
-        timeout: Optional[Union[float, httpx.Timeout]],
-        custom_endpoint: Optional[bool],
-        headers: Optional[Dict[str, str]],
-        streaming_decoder: Optional[CustomStreamingDecoder] = None,
-    ):
-        databricks_client = get_databricks_model_serving_client_wrapper(
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
-            synchronous=False,
-            api_key=api_key,
-            api_base=api_base,
-            http_handler=http_handler,
-            timeout=timeout,
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-            streaming_decoder=streaming_decoder,
-        )
-        response: ModelResponse = await databricks_client.completion(
-            endpoint_name=model,
-            messages=messages,
-            optional_params=optional_params,
-            stream=False,
-        )
-
-        base_model: Optional[str] = optional_params.pop("base_model", None)
-
-        response.model = custom_llm_provider + "/" + response.model
-
-        if base_model is not None:
-            response._hidden_params["model"] = base_model
-
-        return response
-
-    async def acompletion_stream_function(
-        self,
-        model: str,
-        messages: List[Dict[str, str]],
-        optional_params: Dict[str, Any],
-        custom_llm_provider: str,
-        logging_obj,
-        api_key: Optional[str],
-        api_base: Optional[str],
-        http_handler: Optional[AsyncHTTPHandler],
-        timeout: Optional[Union[float, httpx.Timeout]],
-        custom_endpoint: Optional[bool],
-        headers: Optional[Dict[str, str]],
-        streaming_decoder: Optional[CustomStreamingDecoder] = None,
-    ) -> CustomStreamWrapper:
-        databricks_client = get_databricks_model_serving_client_wrapper(
-            custom_llm_provider=custom_llm_provider,
-            logging_obj=logging_obj,
-            synchronous=False,
-            # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
-            api_key=api_key,
-            api_base=api_base,
-            http_handler=http_handler,
-            timeout=timeout,
-            custom_endpoint=custom_endpoint,
-            headers=headers,
-            streaming_decoder=streaming_decoder,
-        )
-        response = await databricks_client.completion(
-            endpoint_name=model,
-            messages=messages,
-            optional_params=optional_params,
-            stream=True,
-        )
-        return response
-
     def completion(
         self,
         model: str,
@@ -298,7 +182,6 @@ class DatabricksChatCompletion(BaseLLM):
         custom_endpoint = custom_endpoint or optional_params.pop(
             "custom_endpoint", None
         )
-        base_model: Optional[str] = optional_params.pop("base_model", None)
 
         ## Load Config
         config = litellm.DatabricksConfig().get_config()
@@ -308,116 +191,69 @@ class DatabricksChatCompletion(BaseLLM):
             ):  # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
                 optional_params[k] = v
 
-        stream: bool = optional_params.get("stream", None) or False
+        stream: bool = optional_params.get("stream", False)
         optional_params["stream"] = stream
 
-        data = {
-            "model": model,
-            "messages": messages,
-            **optional_params,
-        }
+        # data = {
+        #     "model": model,
+        #     "messages": messages,
+        #     **optional_params,
+        # }
+        #
+        # ## LOGGING
+        # # TODO: UPDATE THIS!
+        # logging_obj.pre_call(
+        #     input=messages,
+        #     api_key=api_key,
+        #     additional_args={
+        #         "complete_input_dict": data,
+        #         "api_base": api_base,
+        #         "headers": headers,
+        #     },
+        # )
 
-        ## LOGGING
-        # TODO: UPDATE THIS!
-        logging_obj.pre_call(
-            input=messages,
+        databricks_client = get_databricks_model_serving_client_wrapper(
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+            synchronous=(acompletion is not True),
             api_key=api_key,
-            additional_args={
-                "complete_input_dict": data,
-                "api_base": api_base,
-                "headers": headers,
-            },
+            api_base=api_base,
+            http_handler=client,
+            timeout=timeout,
+            custom_endpoint=custom_endpoint,
+            headers=headers,
+            streaming_decoder=streaming_decoder,
         )
+
+        def format_response(response: ModelResponse):
+            base_model: Optional[str] = optional_params.pop("base_model", None)
+
+            response.model = custom_llm_provider + "/" + response.model
+
+            if base_model is not None:
+                response._hidden_params["model"] = base_model
+
+            return response 
+
         if acompletion is True:
-            if isinstance(client, AsyncHTTPHandler):
-                # Non-async client passed in, but async call requested
-                client = None
-            if (
-                stream is not None and stream is True
-            ):  # if function call - fake the streaming (need complete blocks for output parsing in openai format)
-                print_verbose("makes async databricks streaming POST request")
-                return self.acompletion_stream_function(
-                    model=model,
+            async def get_async_completion():
+                response = await databricks_client.acompletion(
+                    endpoint_name=model,
                     messages=messages,
                     optional_params=optional_params,
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
-                    api_key=api_key,
-                    api_base=api_base,
-                    http_handler=client,
-                    timeout=timeout,
-                    custom_endpoint=custom_endpoint,
-                    headers=headers,
-                    streaming_decoder=streaming_decoder,
+                    stream=stream,
                 )
-            else:
-                return self.acompletion_function(
-                    model=model,
-                    messages=messages,
-                    optional_params=optional_params,
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
-                    api_key=api_key,
-                    api_base=api_base,
-                    http_handler=client,
-                    timeout=timeout,
-                    custom_endpoint=custom_endpoint,
-                    headers=headers,
-                )
+                return format_response(response)
+
+            return get_async_completion()
         else:
-            if not isinstance(client, HTTPHandler):
-                # Non-sync client passed in, but sync call requested
-                client = None
-            if stream is True:
-                client = client or HTTPHandler(timeout=timeout)  # type: ignore
-
-                databricks_client = get_databricks_model_serving_client_wrapper(
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
-                    synchronous=True,
-                    # TODO: It's weird that streaming is set here, *and* we have to call a separate function for streaming
-                    api_key=api_key,
-                    api_base=api_base,
-                    http_handler=client,
-                    timeout=timeout,
-                    custom_endpoint=custom_endpoint,
-                    headers=headers,
-                    streaming_decoder=streaming_decoder,
-                )
-                return databricks_client.completion(
-                    endpoint_name=model,
-                    messages=messages,
-                    optional_params=optional_params,
-                    # custom_llm_provider=custom_llm_provider,
-                    # logging_obj=logging_obj,
-                    stream=True,
-                )
-            else:
-                databricks_client = get_databricks_model_serving_client_wrapper(
-                    custom_llm_provider=custom_llm_provider,
-                    logging_obj=logging_obj,
-                    synchronous=True,
-                    api_key=api_key,
-                    api_base=api_base,
-                    http_handler=client,
-                    timeout=timeout,
-                    custom_endpoint=custom_endpoint,
-                    headers=headers,
-                    streaming_decoder=streaming_decoder,
-                )
-                response: ModelResponse = databricks_client.completion(
-                    endpoint_name=model,
-                    messages=messages,
-                    optional_params=optional_params,
-                    stream=False,
-                )
-
-                response.model = custom_llm_provider + "/" + response.model
-
-                if base_model is not None:
-                    response._hidden_params["model"] = base_model
-
-                return response
+            response = databricks_client.completion(
+                endpoint_name=model,
+                messages=messages,
+                optional_params=optional_params,
+                stream=stream,
+            )
+            return format_response(response)
 
     async def aembedding(
         self,
