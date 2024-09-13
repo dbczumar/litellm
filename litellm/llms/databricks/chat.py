@@ -14,6 +14,7 @@ import requests  # type: ignore
 
 import litellm
 from litellm.litellm_core_utils.core_helpers import map_finish_reason
+from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.llms.databricks.exceptions import DatabricksError
 from litellm.llms.databricks.client import get_databricks_model_serving_client_wrapper, DatabricksModelServingClientWrapper
@@ -166,7 +167,7 @@ class DatabricksChatCompletion(BaseLLM):
         print_verbose: Callable,
         encoding,
         api_key: Optional[str],
-        logging_obj,
+        logging_obj: LiteLLMLoggingObj,
         optional_params: dict,
         acompletion=None,
         litellm_params=None,
@@ -175,43 +176,28 @@ class DatabricksChatCompletion(BaseLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[Union[HTTPHandler, AsyncHTTPHandler]] = None,
         custom_endpoint: Optional[bool] = None,
-        streaming_decoder: Optional[
-            CustomStreamingDecoder
-        ] = None,  # if openai-compatible api needs custom stream decoder - e.g. sagemaker
+        streaming_decoder: Optional[CustomStreamingDecoder] = None,  # if openai-compatible api needs custom stream decoder - e.g. sagemaker
     ):
+        def emit_log_event(log_fn: callable, response: Optional[str] = None):
+            response_kwargs = {"original_response": response} if response else {}
+            log_fn(
+                input=messages,
+                api_key=api_key,
+                additional_args={
+                    "complete_input_dict": {
+                        "model": model,
+                        "messages": messages,
+                        **optional_params,
+                    },
+                    "api_base": api_base,
+                    "headers": headers,
+                },
+                **response_kwargs,
+            )
+
         custom_endpoint = custom_endpoint or optional_params.pop(
             "custom_endpoint", None
         )
-
-        ## Load Config
-        config = litellm.DatabricksConfig().get_config()
-        for k, v in config.items():
-            if (
-                k not in optional_params
-            ):  # completion(top_k=3) > anthropic_config(top_k=3) <- allows for dynamic variables to be passed in
-                optional_params[k] = v
-
-        stream: bool = optional_params.get("stream", False)
-        optional_params["stream"] = stream
-
-        # data = {
-        #     "model": model,
-        #     "messages": messages,
-        #     **optional_params,
-        # }
-        #
-        # ## LOGGING
-        # # TODO: UPDATE THIS!
-        # logging_obj.pre_call(
-        #     input=messages,
-        #     api_key=api_key,
-        #     additional_args={
-        #         "complete_input_dict": data,
-        #         "api_base": api_base,
-        #         "headers": headers,
-        #     },
-        # )
-
         databricks_client = get_databricks_model_serving_client_wrapper(
             custom_llm_provider=custom_llm_provider,
             logging_obj=logging_obj,
@@ -225,15 +211,20 @@ class DatabricksChatCompletion(BaseLLM):
             streaming_decoder=streaming_decoder,
         )
 
+        for k, v in litellm.DatabricksConfig().get_config().items():
+            optional_params.setdefault(k, v)
+        stream: bool = optional_params.get("stream", False)
+        optional_params["stream"] = stream
+        
+        emit_log_event(log_fn=logging_obj.pre_call)
+
         def format_response(response: ModelResponse):
             base_model: Optional[str] = optional_params.pop("base_model", None)
-
             response.model = custom_llm_provider + "/" + response.model
-
             if base_model is not None:
                 response._hidden_params["model"] = base_model
 
-            return response 
+            return response
 
         if acompletion is True:
             async def get_async_completion():
@@ -243,6 +234,7 @@ class DatabricksChatCompletion(BaseLLM):
                     optional_params=optional_params,
                     stream=stream,
                 )
+                emit_log_event(log_fn=logging_obj.post_call, response=str(response))
                 return format_response(response)
 
             return get_async_completion()
@@ -253,6 +245,7 @@ class DatabricksChatCompletion(BaseLLM):
                 optional_params=optional_params,
                 stream=stream,
             )
+            emit_log_event(log_fn=logging_obj.post_call, response=str(response))
             return format_response(response)
 
     async def aembedding(

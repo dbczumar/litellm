@@ -17,7 +17,6 @@ class DatabricksModelServingClientWrapper:
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
-        # litellm params?
         optional_params: Dict[str, Any],
         stream: bool,
     ) -> ModelResponse:
@@ -30,7 +29,6 @@ class DatabricksModelServingClientWrapper:
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
-        # litellm params?
         optional_params: Dict[str, Any],
         stream: bool,
     ) -> ModelResponse:
@@ -79,9 +77,13 @@ def get_databricks_model_serving_client_wrapper(
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
         raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
 
-    if (api_base, api_key).count(None) == 2:
+    if (api_base, api_key).count(None) == 2 and timeout is None:
+        # If no API base or API key is provided, and no timeout is provided, we will use the
+        # Databricks SDK, which can automatically retrieve an API key and API base configuration
+        # from the current environment. The Databricks SDK does not support user-specified timeouts
+        # or asynchronous calls.
         if not synchronous:
-            raise DatabricksError(status_code=500, message="In order to make asynchronous calls, Databricks API base and API key must both be set.")
+            raise DatabricksError(status_code=400, message="In order to make asynchronous calls, Databricks API base and API key must both be set.")
 
         try:
             import databricks.sdk
@@ -125,7 +127,6 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
-        # litellm params?
         optional_params: Dict[str, Any],
     ) -> ModelResponse:
         from databricks.sdk.service.serving import ChatMessage, ChatMessageRole, QueryEndpointResponse
@@ -143,7 +144,6 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
-        # litellm params?
         optional_params: Dict[str, Any],
     ) -> CustomStreamWrapper:
         raise DatabricksError(status_code=500, message="In order to make asynchronous or streaming calls, Databricks API base and API key must both be set.")
@@ -158,17 +158,15 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
 
     def _translate_endpoint_query_response_to_model_response(self, query_response: 'QueryEndpointResponse') -> ModelResponse:
         from databricks.sdk.service.serving import V1ResponseChoiceElement
-        # Convert V1ResponseChoiceElement to Choices
+
         def convert_choice(v1_choice: V1ResponseChoiceElement) -> Choices:
             return Choices(
                 finish_reason=v1_choice.finish_reason,
-                index=v1_choice.index,  # Since index is always present
-                message=v1_choice.message.as_dict(),  # message is always present, so we directly convert it to a dict
-                logprobs=v1_choice.logprobs,  # logprobs is always present
-                # Assuming 'enhancements' is not part of V1ResponseChoiceElement
+                index=v1_choice.index,
+                message=v1_choice.message.as_dict(),
+                logprobs=v1_choice.logprobs,
             )
 
-        # Direct mapping of fields assuming all fields in QueryEndpointResponse are present
         model_response = ModelResponse(
             id=query_response.id,
             choices=[
@@ -179,7 +177,7 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
             object=query_response.object.value,
             system_fingerprint=query_response.served_model_name,
             _hidden_params={},
-            _response_headers=None, 
+            _response_headers=None,
         )
 
         return model_response
