@@ -3,7 +3,7 @@ import httpx
 import json
 import pytest
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 
 import litellm
@@ -45,8 +45,8 @@ def mock_chat_response() -> Dict[str, Any]:
     }
 
 
-def mock_chat_streaming_response() -> MagicMock:
-    mock_stream_chunks = [
+def mock_chat_streaming_response_chunks() -> List[str]:
+    return [
         json.dumps({
             "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
             "object": "chat.completion.chunk",
@@ -65,7 +65,7 @@ def mock_chat_streaming_response() -> MagicMock:
                 "completion_tokens": 1,
                 "total_tokens": 231
             }
-        }).encode('utf-8') + b'\n',
+        }),
         json.dumps({
             "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
             "object": "chat.completion.chunk",
@@ -84,7 +84,7 @@ def mock_chat_streaming_response() -> MagicMock:
                 "completion_tokens": 1,
                 "total_tokens": 231
             }
-        }).encode('utf-8') + b'\n',
+        }),
         json.dumps({
             "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
             "object": "chat.completion.chunk",
@@ -103,10 +103,37 @@ def mock_chat_streaming_response() -> MagicMock:
                 "completion_tokens": 1,
                 "total_tokens": 231
             }
-        }).encode('utf-8') + b'\n',
-        # Simulate the end of the stream
-        b''  
+        }),
     ]
+
+
+def mock_chat_streaming_response_chunks_bytes() -> List[bytes]:
+    string_chunks = mock_chat_streaming_response_chunks()
+    bytes_chunks = [
+        chunk.encode('utf-8') + b'\n' for chunk in string_chunks
+    ]
+    # Simulate the end of the stream
+    bytes_chunks.append(b'')
+    return bytes_chunks
+
+
+def mock_http_handler_chat_streaming_response() -> MagicMock:
+    mock_stream_chunks = mock_chat_streaming_response_chunks()
+
+    def mock_iter_lines():
+        for chunk in mock_stream_chunks:
+            for line in chunk.splitlines():
+                yield line
+
+
+    mock_response = MagicMock()
+    mock_response.iter_lines.side_effect = mock_iter_lines
+
+    return mock_response
+
+
+def mock_databricks_client_chat_streaming_response() -> MagicMock:
+    mock_stream_chunks = mock_chat_streaming_response_chunks_bytes()
 
     def mock_read_from_stream(size=-1):
         if mock_stream_chunks:
@@ -306,6 +333,48 @@ def test_completions_with_async_http_handler(monkeypatch):
         )
 
 
+def test_completions_streaming_with_sync_http_handler(monkeypatch):
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    sync_handler = HTTPHandler()
+
+    messages = [{"role": "user", "content": "How are you?"}]
+    mock_response = mock_http_handler_chat_streaming_response()
+
+    with patch.object(HTTPHandler, "post", return_value=mock_response) as mock_post:
+        response_stream: CustomStreamWrapper = litellm.completion(
+            model="databricks/dbrx-instruct-071224",
+            messages=messages,
+            client=sync_handler,
+            temperature=0.5,
+            extraparam="testpassingextraparam",
+            stream=True,
+        )
+        response = list(response_stream)
+        assert "databricks/dbrx-instruct-071224" in str(response)
+        assert "chatcmpl" in str(response)
+        assert len(response) == 4
+      
+        mock_post.assert_called_once_with(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "model": "dbrx-instruct-071224",
+                "messages": messages,
+                "temperature": 0.5,
+                "stream": True,
+                "extraparam": "testpassingextraparam",
+            }),
+            stream=True
+        )
+
+
 @pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
 @pytest.mark.parametrize("set_base_key", [True, False])
 def test_completions_with_sync_databricks_client(monkeypatch, set_base_key):
@@ -367,7 +436,7 @@ def test_completions_streaming_with_sync_databricks_client(monkeypatch, set_base
         monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
 
     messages = [{"role": "user", "content": "How are you?"}]
-    mock_response = mock_chat_streaming_response()
+    mock_response = mock_databricks_client_chat_streaming_response()
 
     with patch("databricks.sdk.WorkspaceClient", wraps=WorkspaceClient) as mock_workspace_client, \
          patch.object(ApiClient, "do", return_value=mock_response) as mock_api_request:
@@ -399,7 +468,6 @@ def test_completions_streaming_with_sync_databricks_client(monkeypatch, set_base
             headers=None,
             raw=True
         )
-
 
 
 def test_embeddings_with_sync_http_handler(monkeypatch):
