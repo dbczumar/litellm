@@ -196,10 +196,10 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
     provided, and the Databricks SDK is used to automatically retrieve the API key and base URL
     from the current environment.
 
-    The Databricks SDK does not support asynchronous calls or streaming, so this wrapper is only
-    used for synchronous, non-streaming calls.
+    The Databricks SDK does not support asynchronous calls, so this wrapper is only used for
+    synchronous calls.
 
-    TODO: Support streaming inference and asynchronous execution with the Databricks SDK
+    TODO: Support asynchronous execution with the Databricks SDK
     """
 
     def __init__(
@@ -238,7 +238,7 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> CustomStreamWrapper:
-        def make_call(client: WorkspaceClient):
+        def make_call(**unused_litellm_client_kwargs):
             from databricks.sdk.core import StreamingResponse
 
             response = self.client.api_client.do(
