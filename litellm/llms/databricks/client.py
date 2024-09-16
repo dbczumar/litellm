@@ -12,12 +12,6 @@ from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.utils import ModelResponse, Choices, CustomStreamWrapper, EmbeddingResponse
 from litellm.types.utils import CustomStreamingDecoder
 
-try:
-    from databricks.sdk import WorkspaceClient
-    databricks_sdk_installed = True
-except ImportError:
-    databricks_sdk_installed = False
-
 
 class DatabricksModelServingClientWrapper:
     """
@@ -201,7 +195,13 @@ def get_databricks_model_serving_client_wrapper(
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
         raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be set.")
 
-    if (api_base, api_key).count(None) > 0 and not databricks_sdk_installed:
+    if (api_base, api_key).count(None) > 0:
+        try:
+            from databricks.sdk import WorkspaceClient
+            databricks_sdk_installed = True
+        except ImportError:
+            databricks_sdk_installed = False
+
         if support_async:
             raise DatabricksError(status_code=400, message="In order to make asynchronous calls, Databricks API base URL and API key must both be set.")
         elif not databricks_sdk_installed:

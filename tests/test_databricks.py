@@ -1,6 +1,8 @@
+import asyncio
 import httpx
 import json
 import pytest
+import sys
 from unittest.mock import Mock, patch
 
 import litellm
@@ -51,7 +53,40 @@ def test_throws_if_only_one_of_api_base_or_api_key_set(monkeypatch, set_base):
         assert err_msg in str(exc)
 
 
-def test_foo(monkeypatch):
+def test_throws_if_api_base_and_api_key_absent_and_databricks_sdk_not_installed(monkeypatch):
+    # Simulate that the databricks SDK is not installed
+    monkeypatch.setitem(sys.modules, 'databricks.sdk', None)
+    with pytest.raises(BadRequestError) as exc:
+        litellm.completion(
+            model="databricks/dbrx-instruct-071224",
+            messages={"role": "user", "content": "How are you?"},
+        )
+    assert "the databricks-sdk Python library must be installed." in str(exc)
+
+
+def test_throws_for_async_request_when_api_base_and_api_key_absent():
+    err_msg = "In order to make asynchronous calls"
+
+    with pytest.raises(BadRequestError) as exc:
+        asyncio.run(
+            litellm.acompletion(
+                model="databricks/dbrx-instruct-071224",
+                messages={"role": "user", "content": "How are you?"},
+            )
+        )
+    assert err_msg in str(exc)
+
+    with pytest.raises(BadRequestError) as exc:
+        asyncio.run(
+            litellm.aembedding(
+                model="databricks/bge-12312",
+                input=["Hello", "World"],
+            )
+        )
+    assert err_msg in str(exc)
+
+
+def test_completions_sends_expected_request(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
