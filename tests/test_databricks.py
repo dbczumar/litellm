@@ -131,6 +131,7 @@ def mock_http_handler_chat_streaming_response() -> MagicMock:
 
     return mock_response
 
+
 def mock_http_handler_chat_async_streaming_response() -> MagicMock:
     mock_stream_chunks = mock_chat_streaming_response_chunks()
 
@@ -146,14 +147,13 @@ def mock_http_handler_chat_async_streaming_response() -> MagicMock:
     return mock_response
 
 
-
 def mock_databricks_client_chat_streaming_response() -> MagicMock:
     mock_stream_chunks = mock_chat_streaming_response_chunks_bytes()
 
     def mock_read_from_stream(size=-1):
         if mock_stream_chunks:
             return mock_stream_chunks.pop(0)
-        return b'' 
+        return b''
 
     mock_response = MagicMock()
     streaming_response_mock = MagicMock()
