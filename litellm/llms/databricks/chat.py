@@ -262,6 +262,23 @@ class DatabricksChatCompletion(BaseLLM):
         aembedding=None,
         headers: Optional[dict] = None,
     ) -> EmbeddingResponse:
+        def emit_log_event(log_fn: callable, response: Optional[str] = None):
+            response_kwargs = {"original_response": response} if response else {}
+            log_fn(
+                input=input,
+                api_key=api_key,
+                additional_args={
+                    "complete_input_dict": {
+                        "model": model,
+                        "input": input,
+                        **optional_params,
+                    },
+                    "api_base": api_base,
+                    "headers": headers,
+                },
+                **response_kwargs,
+            )
+
         databricks_client = get_databricks_model_serving_client_wrapper(
             custom_llm_provider=litellm.LlmProviders.DATABRICKS,
             logging_obj=logging_obj,
@@ -276,15 +293,7 @@ class DatabricksChatCompletion(BaseLLM):
         for k, v in litellm.DatabricksConfig().get_config().items():
             optional_params.setdefault(k, v)
 
-        # emit_log_event(log_fn=logging_obj.pre_call)
-
-        # def format_response(response: ModelResponse):
-        #     base_model: Optional[str] = optional_params.pop("base_model", None)
-        #     response.model = custom_llm_provider + "/" + response.model
-        #     if base_model is not None:
-        #         response._hidden_params["model"] = base_model
-        #
-        #     return response
+        emit_log_event(log_fn=logging_obj.pre_call)
 
         if aembedding is True:
             async def get_async_embedding():
@@ -293,8 +302,7 @@ class DatabricksChatCompletion(BaseLLM):
                     inputs=input,
                     optional_params=optional_params,
                 )
-                # emit_log_event(log_fn=logging_obj.post_call, response=str(response))
-                # return format_response(response)
+                emit_log_event(log_fn=logging_obj.post_call, response=str(response))
                 return response
 
             return get_async_embedding()
@@ -304,61 +312,5 @@ class DatabricksChatCompletion(BaseLLM):
                 inputs=input,
                 optional_params=optional_params,
             )
-            # emit_log_event(log_fn=logging_obj.post_call, response=str(response))
-            # return format_response(response)
+            emit_log_event(log_fn=logging_obj.post_call, response=str(response))
             return response
-
-        # api_base, headers = self._validate_environment(
-        #     api_base=api_base,
-        #     api_key=api_key,
-        #     endpoint_type="embeddings",
-        #     custom_endpoint=False,
-        #     headers=headers,
-        # )
-        # model = model
-        # data = {"model": model, "input": input, **optional_params}
-
-        # ## LOGGING
-        # logging_obj.pre_call(
-        #     input=input,
-        #     api_key=api_key,
-        #     additional_args={"complete_input_dict": data, "api_base": api_base},
-        # )
-
-        # if aembedding == True:
-        #     return self.aembedding(data=data, input=input, logging_obj=logging_obj, model_response=model_response, api_base=api_base, api_key=api_key, timeout=timeout, client=client, headers=headers)  # type: ignore
-        # if client is None or isinstance(client, AsyncHTTPHandler):
-        #     self.client = HTTPHandler(timeout=timeout)  # type: ignore
-        # else:
-        #     self.client = client
-        #
-        # ## EMBEDDING CALL
-        # try:
-        #     response = self.client.post(
-        #         api_base,
-        #         headers=headers,
-        #         data=json.dumps(data),
-        #     )  # type: ignore
-        #
-        #     response.raise_for_status()  # type: ignore
-        #
-        #     response_json = response.json()  # type: ignore
-        # except httpx.HTTPStatusError as e:
-        #     raise DatabricksError(
-        #         status_code=e.response.status_code,
-        #         message=response.text if response else str(e),
-        #     )
-        # except httpx.TimeoutException as e:
-        #     raise DatabricksError(status_code=408, message="Timeout error occurred.")
-        # except Exception as e:
-        #     raise DatabricksError(status_code=500, message=str(e))
-        #
-        # ## LOGGING
-        # logging_obj.post_call(
-        #     input=input,
-        #     api_key=api_key,
-        #     additional_args={"complete_input_dict": data},
-        #     original_response=response_json,
-        # )
-        #
-        # return litellm.EmbeddingResponse(**response_json)
