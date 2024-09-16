@@ -53,8 +53,9 @@ def test_throws_if_only_one_of_api_base_or_api_key_set(monkeypatch, set_base):
 
 def test_foo(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
-    monkeypatch.setenv("DATABRICKS_API_KEY", "dapimykey")
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
 
     sync_handler = HTTPHandler()
     mock_response_json = {
@@ -70,7 +71,7 @@ def test_foo(monkeypatch):
                     "content": "Hello! I'm an AI assistant. I'm doing well. How can I help?",
                     "function_call": None,
                     "tool_calls": None,
-                }, 
+                },
                 "finish_reason": "stop",
             }
         ],
@@ -81,7 +82,7 @@ def test_foo(monkeypatch):
         },
         "system_fingerprint": None
     }
-       
+      
     mock_response = Mock(spec=httpx.Response)
     mock_response.status_code = 200
     mock_response.json.return_value = mock_response_json
@@ -93,30 +94,27 @@ def test_foo(monkeypatch):
         }
     }
 
-    messages = [
-        {
-            "role": "user",
-            "content": "How are you?",
-        }
-    ]
+    messages = [{"role": "user", "content": "How are you?"}]
 
     with patch.object(HTTPHandler, "post", return_value=mock_response) as mock_post:
         response = litellm.completion(
             model="databricks/dbrx-instruct-071224",
             messages=messages,
             client=sync_handler,
+            temperature=0.5,
         )
         assert expected_response_json == response.to_dict()
 
         mock_post.assert_called_once_with(
             f"{base_url}/chat/completions",
             headers={
-                "Authorization": "Bearer dapimykey",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             data=json.dumps({
                 "model": "dbrx-instruct-071224",
                 "messages": messages,
+                "temperature": 0.5,
                 "stream": False,
             }),
         )
