@@ -1,6 +1,7 @@
+import io
 import json
 from abc import abstractmethod
-from typing import Optional, List, Dict, Any, Literal, Union
+from typing import Optional, List, Dict, Any, Literal, Union, BinaryIO
 
 import httpx  # type: ignore
 
@@ -10,6 +11,12 @@ from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.utils import ModelResponse, Choices, CustomStreamWrapper
 from litellm.types.utils import CustomStreamingDecoder
+
+try:
+    from databricks.sdk import WorkspaceClient
+    databricks_sdk_installed = True
+except ImportError:
+    databricks_sdk_installed = False
 
 
 class DatabricksModelServingClientWrapper:
@@ -132,8 +139,7 @@ def get_databricks_model_serving_client_wrapper(
             requests. If an HTTP handler is provided, `api_base` and `api_key` must also be
             provided. If not provided, a default HTTP handler will be used.
         timeout (Optional[Union[float, httpx.Timeout]]): The timeout to use for requests.
-        custom_endpoint (Optional[bool]): Indicates whether a custom endpoint is being used. If
-            `custom_endpoint` is `True`, `api_base` and `api_key` must be provided.
+        custom_endpoint (Optional[bool]): Indicates whether a custom endpoint is being used.
         headers (Optional[Dict[str, str]]): Additional headers to include in requests.
         streaming_decoder (Optional[CustomStreamingDecoder]): The decoder to use for
             processing streaming responses.
@@ -142,27 +148,16 @@ def get_databricks_model_serving_client_wrapper(
     if (api_base, api_key).count(None) == 1:
         raise DatabricksError(status_code=400, message="Databricks API base URL and API key must both be set, or both must be unset.")
 
-    if custom_endpoint is not None and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=400, message="If a custom endpoint is specified, Databricks API base URL and API key must both be set.")
-
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
         raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
 
-    if (api_base, api_key).count(None) == 2:
-        # If no API base URL or API key is provided we will use the Databricks SDK, which can
-        # automatically retrieve an API key and API base URL configuration from the current
-        # environment.
+    if (api_base, api_key).count(None) > 0 and not databricks_sdk_installed:
         if support_async:
-            # The Databricks SDK does not support streaming or asynchronous calls.
             raise DatabricksError(status_code=400, message="In order to make asynchronous calls, Databricks API base URL and API key must both be set.")
-
-        try:
-            import databricks.sdk
-
-            return DatabricksModelServingWorkspaceClientWrapper()
-        except ImportError:
+        elif not databricks_sdk_installed:
             raise DatabricksError(status_code=400, message="If Databricks API base URL and API key are not provided, the databricks-sdk Python library must be installed.")
-    elif support_async:
+
+    if support_async:
         async_http_handler = http_handler if isinstance(http_handler, AsyncHTTPHandler) else AsyncHTTPHandler(timeout=timeout)
         return DatabricksModelServingAsyncHTTPHandlerWrapper(
             api_base=api_base,
@@ -173,7 +168,7 @@ def get_databricks_model_serving_client_wrapper(
             custom_endpoint=custom_endpoint,
             headers=headers,
         )
-    else:
+    elif http_handler is not None:
         http_handler = http_handler if isinstance(http_handler, HTTPHandler) else HTTPHandler(timeout=timeout)
         return DatabricksModelServingHTTPHandlerWrapper(
             api_base=api_base,
@@ -184,6 +179,13 @@ def get_databricks_model_serving_client_wrapper(
             custom_endpoint=custom_endpoint,
             headers=headers,
             streaming_decoder=streaming_decoder,
+        )
+    else:
+        return DatabricksModelServingWorkspaceClientWrapper(
+            logging_obj=logging_obj,
+            api_base=api_base,
+            api_key=api_key,
+            headers=headers
         )
 
 
@@ -200,10 +202,18 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
     TODO: Support streaming inference and asynchronous execution with the Databricks SDK
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        logging_obj: LiteLLMLoggingObj,
+        api_base: Optional[str],
+        api_key: Optional[str],
+        headers: Optional[Dict[str, str]],
+    ):
         from databricks.sdk import WorkspaceClient
 
-        self.client = WorkspaceClient()
+        self.logging_obj = logging_obj
+        self.client = WorkspaceClient(host=api_base, token=api_key)
+        self.headers = headers
 
     def _completion(
         self,
@@ -211,16 +221,16 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> ModelResponse:
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole, QueryEndpointResponse
-
-        endpoint_response: QueryEndpointResponse = self.client.serving_endpoints.query(
-          name=endpoint_name,
-          messages=[
-            self._translate_chat_message_for_query(message) for message in messages
-          ],
-          **optional_params
+        response = self.client.api_client.do(
+            method="POST",
+            path=f"/serving-endpoints/{endpoint_name}/invocations",
+            headers=self.headers,
+            body={
+                "messages": messages,
+                **optional_params
+            }
         )
-        return self._translate_endpoint_query_response_to_model_response(endpoint_response)
+        return ModelResponse(**response)
 
     def _streaming_completion(
         self,
@@ -228,48 +238,31 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> CustomStreamWrapper:
-        # NB: The user-facing error message here indicates that the
-        # DatabricksModelServingWorkspaceClientWrapper should not have been used to handle a
-        # streaming request, implying that the user should have provided an API base URL and API
-        # key. The location of the error message is not ideal, but it's temporary.
-        #
-        # TODO: Support streaming inference with the Databricks SDK
-        raise DatabricksError(status_code=500, message="In order to make asynchronous or streaming calls, Databricks API base URL and API key must both be set.")
+        def make_call(client: WorkspaceClient):
+            from databricks.sdk.core import StreamingResponse
 
-    def _translate_chat_message_for_query(self, message: Dict[str, str]) -> 'ChatMessage':
-        from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
-        return ChatMessage(
-            content=message["content"],
-            role=ChatMessageRole(message["role"])
-        )
-
-    def _translate_endpoint_query_response_to_model_response(self, query_response: 'QueryEndpointResponse') -> ModelResponse:
-        from databricks.sdk.service.serving import V1ResponseChoiceElement
-
-        def convert_choice(v1_choice: V1ResponseChoiceElement) -> Choices:
-            return Choices(
-                finish_reason=v1_choice.finish_reason,
-                index=v1_choice.index,
-                message=v1_choice.message.as_dict(),
-                logprobs=v1_choice.logprobs,
+            response = self.client.api_client.do(
+                method="POST",
+                path=f"/serving-endpoints/{endpoint_name}/invocations",
+                headers=self.headers,
+                raw=True,
+                body={
+                    "messages": messages,
+                    "stream": True,
+                    **optional_params
+                }
             )
+            stream_wrapper: StreamingResponse = response["contents"]
+            byte_stream: BinaryIO = stream_wrapper.__enter__()
+            text_stream = io.TextIOWrapper(byte_stream, encoding="utf-8")
+            return ModelResponseIterator(text_stream, sync_stream=True)
 
-        model_response = ModelResponse(
-            id=query_response.id,
-            choices=[
-                convert_choice(choice) for choice in query_response.choices
-            ],
-            created=query_response.created,
-            model=query_response.model,
-            object=query_response.object.value,
-            system_fingerprint=query_response.served_model_name,
-            _hidden_params={},
-            _response_headers=None,
+        return CustomStreamWrapper(
+            completion_stream=None,
+            make_call= make_call,
+            model=endpoint_name,
+            logging_obj=self.logging_obj,
         )
-
-        return model_response
-
 
 class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
     """
@@ -364,7 +357,6 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         data = self._prepare_data(endpoint_name, messages, optional_params)
         response = None
         try:
-            print(self._build_headers())
             response = self.http_handler.post(
                 self._get_api_base(endpoint_type="chat_completions"),
                 headers=self._build_headers(),
