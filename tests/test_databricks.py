@@ -33,6 +33,59 @@ def mock_httpx_response(
     if json_data is not None:
         mock_response.json.return_value = json_data
 
+
+def mock_chat_response() -> Dict[str, Any]:
+    return {
+        "id": "chatcmpl_3f78f09a-489c-4b8d-a587-f162c7497891",
+        "object": "chat.completion",
+        "created": 1726285449,
+        "model": "dbrx-instruct-071224",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello! I'm an AI assistant. I'm doing well. How can I help?",
+                    "function_call": None,
+                    "tool_calls": None,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 230,
+            "completion_tokens": 38,
+            "total_tokens": 268
+        },
+        "system_fingerprint": None
+    }
+
+
+def mock_embedding_response() -> Dict[str, Any]:
+    return {
+      "object": "list",
+      "model": "bge-large-en-v1.5",
+      "data": [
+        {
+          "index": 0,
+          "object": "embedding",
+          "embedding": [
+            0.06768798828125,
+            -0.01291656494140625,
+            -0.0501708984375,
+            0.0245361328125,
+            -0.030364990234375
+          ]
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 8,
+        "total_tokens": 8,
+        "completion_tokens": 0,
+      }
+    }
+
+
 @pytest.mark.parametrize("set_base", [True, False])
 def test_throws_if_only_one_of_api_base_or_api_key_set(monkeypatch, set_base):
     err_msg = "Databricks API base URL and API key must both be set, or both must be unset"
@@ -93,33 +146,6 @@ def test_throws_for_async_request_when_api_base_and_api_key_absent():
     assert err_msg in str(exc)
 
 
-def mock_chat_response() -> Dict[str, Any]:
-    return {
-        "id": "chatcmpl_3f78f09a-489c-4b8d-a587-f162c7497891",
-        "object": "chat.completion",
-        "created": 1726285449,
-        "model": "dbrx-instruct-071224",
-        "choices": [
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello! I'm an AI assistant. I'm doing well. How can I help?",
-                    "function_call": None,
-                    "tool_calls": None,
-                },
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 230,
-            "completion_tokens": 38,
-            "total_tokens": 268
-        },
-        "system_fingerprint": None
-    }
-
-
 def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
@@ -147,7 +173,7 @@ def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
             client=sync_handler,
             temperature=0.5,
         )
-        assert expected_response_json == response.to_dict()
+        assert response.to_dict() == expected_response_json
 
         mock_post.assert_called_once_with(
             f"{base_url}/chat/completions",
@@ -193,7 +219,7 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
                 temperature=0.5,
             )
         )
-        assert expected_response_json == response.to_dict()
+        assert response.to_dict() == expected_response_json
 
         mock_post.assert_called_once_with(
             f"{base_url}/chat/completions",
@@ -213,6 +239,7 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
 @pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
 @pytest.mark.parametrize("set_base_key", [True, False])
 def test_completions_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
+    from databricks.sdk import WorkspaceClient
     from databricks.sdk.core import ApiClient
 
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
@@ -230,14 +257,19 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
 
     messages = [{"role": "user", "content": "How are you?"}]
 
-    with patch.object(ApiClient, "do", return_value=mock_chat_response()) as mock_api_request:
+    with patch("databricks.sdk.WorkspaceClient", wraps=WorkspaceClient) as mock_workspace_client, \
+         patch.object(ApiClient, "do", return_value=mock_chat_response()) as mock_api_request:
         response = litellm.completion(
             model="databricks/dbrx-instruct-071224",
             messages=messages,
             temperature=0.5,
         )
-        assert expected_response_json == response.to_dict()
+        assert response.to_dict() == expected_response_json
 
+        mock_workspace_client.assert_called_once_with(
+            host=base_url if set_base_key else None,
+            token=api_key if set_base_key else None,
+        )
         mock_api_request.assert_called_once_with(
             method="POST",
             path=f"/serving-endpoints/dbrx-instruct-071224/invocations",
@@ -248,3 +280,41 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
             },
             headers=None,
         )
+
+
+@pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
+@pytest.mark.parametrize("set_base_key", [True, False])
+def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.core import ApiClient
+
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    if set_base_key:
+        monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+        monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    inputs = ["Hello", "World"]
+
+    with patch("databricks.sdk.WorkspaceClient", wraps=WorkspaceClient) as mock_workspace_client, \
+         patch.object(ApiClient, "do", return_value=mock_embedding_response()) as mock_api_request:
+        response = litellm.embedding(
+            model="databricks/bge-large-en-v1.5",
+            input=inputs,
+        )
+        assert response.to_dict() == mock_embedding_response()
+
+        mock_workspace_client.assert_called_once_with(
+            host=base_url if set_base_key else None,
+            token=api_key if set_base_key else None,
+        )
+        mock_api_request.assert_called_once_with(
+            method="POST",
+            path=f"/serving-endpoints/bge-large-en-v1.5/invocations",
+            body={"input": inputs},
+            headers=None,
+        )
+
+
+
+

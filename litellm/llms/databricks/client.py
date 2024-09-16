@@ -214,7 +214,7 @@ def get_databricks_model_serving_client_wrapper(
                 status_code=400,
                 message=(
                     "In order to make asynchronous calls,"
-                    " Databricks API base URLand API key must both be set."
+                    " Databricks API base URL and API key must both be set."
                 )
             )
         elif not databricks_sdk_installed:
