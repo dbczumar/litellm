@@ -384,7 +384,8 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
     def _build_headers(self) -> Dict[str, str]:
         return {
             **self.headers,
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
         }
 
     def _prepare_completions_data(
@@ -407,7 +408,7 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
     ) -> Dict[str, Any]:
         return {
             "model": endpoint_name,
-            "inputs": inputs,
+            "input": inputs,
             **optional_params,
         }
 
