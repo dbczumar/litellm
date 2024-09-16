@@ -93,7 +93,6 @@ class DatabricksModelServingClientWrapper:
         Base method for sending a synchronous chat completion request to a Databricks Model Serving
         endpoint and retrieving a response. This method should be implemented by subclasses.
         """
-        pass
 
     @abstractmethod
     def _streaming_completion(
@@ -106,7 +105,6 @@ class DatabricksModelServingClientWrapper:
         Base method for sending an asynchronous chat completion request to a Databricks Model
         Serving endpoint and retrieving a response. This method should be implemented by subclasses.
         """
-        pass
 
 
 def get_databricks_model_serving_client_wrapper(
@@ -149,7 +147,7 @@ def get_databricks_model_serving_client_wrapper(
         raise DatabricksError(status_code=400, message="Databricks API base URL and API key must both be set, or both must be unset.")
 
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be provided.")
+        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be set.")
 
     if (api_base, api_key).count(None) > 0 and not databricks_sdk_installed:
         if support_async:
