@@ -172,6 +172,7 @@ def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
             messages=messages,
             client=sync_handler,
             temperature=0.5,
+            extraparam="testpassingextraparam",
         )
         assert response.to_dict() == expected_response_json
 
@@ -185,6 +186,7 @@ def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
                 "model": "dbrx-instruct-071224",
                 "messages": messages,
                 "temperature": 0.5,
+                "extraparam": "testpassingextraparam",
                 "stream": False,
             }),
         )
@@ -217,6 +219,7 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
                 messages=messages,
                 client=async_handler,
                 temperature=0.5,
+                extraparam="testpassingextraparam",
             )
         )
         assert response.to_dict() == expected_response_json
@@ -231,6 +234,7 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
                 "model": "dbrx-instruct-071224",
                 "messages": messages,
                 "temperature": 0.5,
+                "extraparam": "testpassingextraparam",
                 "stream": False,
             }),
         )
@@ -263,6 +267,7 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
             model="databricks/dbrx-instruct-071224",
             messages=messages,
             temperature=0.5,
+            extraparam="testpassingextraparam",
         )
         assert response.to_dict() == expected_response_json
 
@@ -276,6 +281,7 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
             body={
                 "messages": messages,
                 "temperature": 0.5,
+                "extraparam": "testpassingextraparam",
                 "stream": False,
             },
             headers=None,
@@ -300,6 +306,7 @@ def test_embeddings_sends_expected_request_with_sync_http_handler(monkeypatch):
             model="databricks/bge-large-en-v1.5",
             input=inputs,
             client=sync_handler,
+            extraparam="testpassingextraparam",
         )
         assert response.to_dict() == mock_embedding_response()
 
@@ -312,6 +319,7 @@ def test_embeddings_sends_expected_request_with_sync_http_handler(monkeypatch):
             data=json.dumps({
                 "model": "bge-large-en-v1.5",
                 "input": inputs,
+                "extraparam": "testpassingextraparam",
             }),
         )
 
@@ -335,6 +343,7 @@ def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypat
         response = litellm.embedding(
             model="databricks/bge-large-en-v1.5",
             input=inputs,
+            extraparam="testpassingextraparam",
         )
         assert response.to_dict() == mock_embedding_response()
 
@@ -345,6 +354,9 @@ def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypat
         mock_api_request.assert_called_once_with(
             method="POST",
             path=f"/serving-endpoints/bge-large-en-v1.5/invocations",
-            body={"input": inputs},
+            body={
+                "input": inputs,
+                "extraparam": "testpassingextraparam",
+            },
             headers=None,
         )
