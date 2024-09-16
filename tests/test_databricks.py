@@ -9,7 +9,13 @@ from unittest.mock import Mock, patch
 import litellm
 from litellm.exceptions import BadRequestError
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-# from litellm.llms.databricks.exceptions import DatabricksError
+
+try:
+    from databricks.sdk import WorkspaceClient
+    databricks_sdk_installed = True
+except ImportError:
+    databricks_sdk_installed = False
+
 
 def mock_httpx_response(
     status_code=200, 
@@ -201,4 +207,44 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
                 "temperature": 0.5,
                 "stream": False,
             }),
+        )
+
+
+@pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
+@pytest.mark.parametrize("set_base_key", [True, False])
+def test_completions_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
+    from databricks.sdk.core import ApiClient
+
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    if set_base_key:
+        monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+        monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    expected_response_json = {
+        **mock_chat_response(),
+        **{
+            "model": "databricks/dbrx-instruct-071224",
+        }
+    }
+
+    messages = [{"role": "user", "content": "How are you?"}]
+
+    with patch.object(ApiClient, "do", return_value=mock_chat_response()) as mock_api_request:
+        response = litellm.completion(
+            model="databricks/dbrx-instruct-071224",
+            messages=messages,
+            temperature=0.5,
+        )
+        assert expected_response_json == response.to_dict()
+
+        mock_api_request.assert_called_once_with(
+            method="POST",
+            path=f"/serving-endpoints/dbrx-instruct-071224/invocations",
+            body={
+                "messages": messages,
+                "temperature": 0.5,
+                "stream": False,
+            },
+            headers=None,
         )
