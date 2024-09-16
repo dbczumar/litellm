@@ -4,34 +4,18 @@ import json
 import pytest
 import sys
 from typing import Any, Dict
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import litellm
 from litellm.exceptions import BadRequestError
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
+from litellm.utils import CustomStreamWrapper
 
 try:
     from databricks.sdk import WorkspaceClient
     databricks_sdk_installed = True
 except ImportError:
     databricks_sdk_installed = False
-
-
-def mock_httpx_response(
-    status_code=200, 
-    json_data=None, 
-    text_data=None, 
-    headers=None
-) -> httpx.Response:
-    # Create a mock response
-    mock_response = Mock(spec=httpx.Response)
-
-    # Set the status code
-    mock_response.status_code = status_code
-
-    # Mock the .json() method
-    if json_data is not None:
-        mock_response.json.return_value = json_data
 
 
 def mock_chat_response() -> Dict[str, Any]:
@@ -59,6 +43,88 @@ def mock_chat_response() -> Dict[str, Any]:
         },
         "system_fingerprint": None
     }
+
+
+def mock_chat_streaming_response() -> MagicMock:
+    mock_stream_chunks = [
+        json.dumps({
+            "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
+            "object": "chat.completion.chunk",
+            "created": 1726469651,
+            "model": "dbrx-instruct-071224",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", "content": "Hello"},
+                    "finish_reason": None,
+                    "logprobs": None
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 230,
+                "completion_tokens": 1,
+                "total_tokens": 231
+            }
+        }).encode('utf-8') + b'\n',
+        json.dumps({
+            "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
+            "object": "chat.completion.chunk",
+            "created": 1726469651,
+            "model": "dbrx-instruct-071224",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": " world"},
+                    "finish_reason": None,
+                    "logprobs": None
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 230,
+                "completion_tokens": 1,
+                "total_tokens": 231
+            }
+        }).encode('utf-8') + b'\n',
+        json.dumps({
+            "id": "chatcmpl_8a7075d1-956e-4960-b3a6-892cd4649ff3",
+            "object": "chat.completion.chunk",
+            "created": 1726469651,
+            "model": "dbrx-instruct-071224",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "!"},
+                    "finish_reason": "stop",
+                    "logprobs": None
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 230,
+                "completion_tokens": 1,
+                "total_tokens": 231
+            }
+        }).encode('utf-8') + b'\n',
+        # Simulate the end of the stream
+        b''  
+    ]
+
+    def mock_read_from_stream(size=-1):
+        if mock_stream_chunks:
+            return mock_stream_chunks.pop(0)
+        return b''  
+
+    mock_response = MagicMock()
+    streaming_response_mock = MagicMock()
+    streaming_response_iterator_mock = MagicMock()
+    # Mock the __getitem__("content") method to return the streaming response
+    mock_response.__getitem__.return_value = streaming_response_mock
+    # Mock the streaming response __enter__ method to return the streaming response iterator
+    streaming_response_mock.__enter__.return_value = streaming_response_iterator_mock
+
+    streaming_response_iterator_mock.read1.side_effect = mock_read_from_stream
+    streaming_response_iterator_mock.closed = False
+
+    return mock_response
 
 
 def mock_embedding_response() -> Dict[str, Any]:
@@ -146,7 +212,7 @@ def test_throws_for_async_request_when_api_base_and_api_key_absent():
     assert err_msg in str(exc)
 
 
-def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
+def test_completions_with_sync_http_handler(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
@@ -192,7 +258,7 @@ def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
         )
 
 
-def test_completions_sends_expected_request_with_async_http_handler(monkeypatch):
+def test_completions_with_async_http_handler(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
@@ -242,7 +308,7 @@ def test_completions_sends_expected_request_with_async_http_handler(monkeypatch)
 
 @pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
 @pytest.mark.parametrize("set_base_key", [True, False])
-def test_completions_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
+def test_completions_with_sync_databricks_client(monkeypatch, set_base_key):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.core import ApiClient
 
@@ -288,7 +354,55 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
         )
 
 
-def test_embeddings_sends_expected_request_with_sync_http_handler(monkeypatch):
+@pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
+@pytest.mark.parametrize("set_base_key", [True, False])
+def test_completions_streaming_with_sync_databricks_client(monkeypatch, set_base_key):
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.core import ApiClient, StreamingResponse
+
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    if set_base_key:
+        monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+        monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    messages = [{"role": "user", "content": "How are you?"}]
+    mock_response = mock_chat_streaming_response()
+
+    with patch("databricks.sdk.WorkspaceClient", wraps=WorkspaceClient) as mock_workspace_client, \
+         patch.object(ApiClient, "do", return_value=mock_response) as mock_api_request:
+        response_stream: CustomStreamWrapper = litellm.completion(
+            model="databricks/dbrx-instruct-071224",
+            messages=messages,
+            temperature=0.5,
+            extraparam="testpassingextraparam",
+            stream=True,
+        )
+        response = list(response_stream)
+        assert "databricks/dbrx-instruct-071224" in str(response)
+        assert "chatcmpl" in str(response)
+        assert len(response) == 4
+       
+        mock_workspace_client.assert_called_once_with(
+            host=base_url if set_base_key else None,
+            token=api_key if set_base_key else None,
+        )
+        mock_api_request.assert_called_once_with(
+            method="POST",
+            path=f"/serving-endpoints/dbrx-instruct-071224/invocations",
+            body={
+                "messages": messages,
+                "temperature": 0.5,
+                "extraparam": "testpassingextraparam",
+                "stream": True,
+            },
+            headers=None,
+            raw=True
+        )
+
+
+
+def test_embeddings_with_sync_http_handler(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
@@ -324,7 +438,7 @@ def test_embeddings_sends_expected_request_with_sync_http_handler(monkeypatch):
         )
 
 
-def test_embeddings_sends_expected_request_with_async_http_handler(monkeypatch):
+def test_embeddings_with_async_http_handler(monkeypatch):
     base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
     api_key = "dapimykey"
     monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
@@ -364,7 +478,7 @@ def test_embeddings_sends_expected_request_with_async_http_handler(monkeypatch):
 
 @pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
 @pytest.mark.parametrize("set_base_key", [True, False])
-def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
+def test_embeddings_with_sync_databricks_client(monkeypatch, set_base_key):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.core import ApiClient
 
