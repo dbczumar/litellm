@@ -588,7 +588,7 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
                 )
             else:
                 return ModelResponseIterator(
-                    streaming_response=response.aiter_lines(), sync_stream=True
+                    streaming_response=response.aiter_lines(), sync_stream=False
                 )
 
         return CustomStreamWrapper(

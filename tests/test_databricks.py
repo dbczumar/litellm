@@ -131,6 +131,21 @@ def mock_http_handler_chat_streaming_response() -> MagicMock:
 
     return mock_response
 
+def mock_http_handler_chat_async_streaming_response() -> MagicMock:
+    mock_stream_chunks = mock_chat_streaming_response_chunks()
+
+    async def mock_iter_lines():
+        for chunk in mock_stream_chunks:
+            for line in chunk.splitlines():
+                yield line
+
+
+    mock_response = MagicMock()
+    mock_response.aiter_lines.return_value = mock_iter_lines()
+
+    return mock_response
+
+
 
 def mock_databricks_client_chat_streaming_response() -> MagicMock:
     mock_stream_chunks = mock_chat_streaming_response_chunks_bytes()
@@ -138,7 +153,7 @@ def mock_databricks_client_chat_streaming_response() -> MagicMock:
     def mock_read_from_stream(size=-1):
         if mock_stream_chunks:
             return mock_stream_chunks.pop(0)
-        return b''  
+        return b'' 
 
     mock_response = MagicMock()
     streaming_response_mock = MagicMock()
@@ -354,6 +369,54 @@ def test_completions_streaming_with_sync_http_handler(monkeypatch):
             stream=True,
         )
         response = list(response_stream)
+        assert "databricks/dbrx-instruct-071224" in str(response)
+        assert "chatcmpl" in str(response)
+        assert len(response) == 4
+      
+        mock_post.assert_called_once_with(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "model": "dbrx-instruct-071224",
+                "messages": messages,
+                "temperature": 0.5,
+                "stream": True,
+                "extraparam": "testpassingextraparam",
+            }),
+            stream=True
+        )
+
+
+def test_completions_streaming_with_async_http_handler(monkeypatch):
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    async_handler = AsyncHTTPHandler()
+
+    messages = [{"role": "user", "content": "How are you?"}]
+    mock_response = mock_http_handler_chat_async_streaming_response()
+
+    with patch.object(AsyncHTTPHandler, "post", return_value=mock_response) as mock_post:
+        response_stream: CustomStreamWrapper = asyncio.run(
+            litellm.acompletion(
+                model="databricks/dbrx-instruct-071224",
+                messages=messages,
+                client=async_handler,
+                temperature=0.5,
+                extraparam="testpassingextraparam",
+                stream=True,
+            )
+        )
+        # Use async list gathering for the response
+        async def gather_responses():
+            return [item async for item in response_stream]
+
+        response = asyncio.run(gather_responses())
         assert "databricks/dbrx-instruct-071224" in str(response)
         assert "chatcmpl" in str(response)
         assert len(response) == 4
