@@ -175,7 +175,8 @@ def get_databricks_model_serving_client_wrapper(
         logging_obj (object): The LiteLLM logging object to use for event logging.
         api_base (Optional[str]): The base URL of the Databricks Model Serving API. If not provided,
             the Databricks SDK will be used to automatically retrieve the API key and base URL
-            from the current environment. If `api_base` is provided, `api_key` must also be provided.
+            from the current environment. If `api_base` is provided, `api_key` must also
+            be provided.
         api_key (Optional[str]): The API key to use for authentication. If not provided, the
             Databricks SDK  will automatically retrieve the API key and base URL from the current
             environment. If `api_base` is provided, `api_key` must also be provided.
@@ -190,10 +191,16 @@ def get_databricks_model_serving_client_wrapper(
 
     """
     if (api_base, api_key).count(None) == 1:
-        raise DatabricksError(status_code=400, message="Databricks API base URL and API key must both be set, or both must be unset.")
+        raise DatabricksError(
+            status_code=400,
+            message="Databricks API base URL and API key must both be set, or both must be unset."
+        )
 
     if (http_handler is not None) and (api_base, api_key).count(None) > 0:
-        raise DatabricksError(status_code=500, message="If http_handler is provided, api_base and api_key must be set.")
+        raise DatabricksError(
+            status_code=500,
+            message="If http_handler is provided, api_base and api_key must be set."
+        )
 
     if (api_base, api_key).count(None) > 0:
         try:
@@ -203,12 +210,27 @@ def get_databricks_model_serving_client_wrapper(
             databricks_sdk_installed = False
 
         if support_async:
-            raise DatabricksError(status_code=400, message="In order to make asynchronous calls, Databricks API base URL and API key must both be set.")
+            raise DatabricksError(
+                status_code=400,
+                message=(
+                    "In order to make asynchronous calls,"
+                    " Databricks API base URLand API key must both be set."
+                )
+            )
         elif not databricks_sdk_installed:
-            raise DatabricksError(status_code=400, message="If Databricks API base URL and API key are not provided, the databricks-sdk Python library must be installed.")
+            raise DatabricksError(
+                status_code=400,
+                message=(
+                    "If Databricks API base URL and API key are not provided,"
+                    " the databricks-sdk Python library must be installed."
+                )
+            )
 
     if support_async:
-        async_http_handler = http_handler if isinstance(http_handler, AsyncHTTPHandler) else AsyncHTTPHandler(timeout=timeout)
+        async_http_handler = (
+            http_handler if isinstance(http_handler, AsyncHTTPHandler)
+            else AsyncHTTPHandler(timeout=timeout)
+        )
         return DatabricksModelServingAsyncHTTPHandlerWrapper(
             api_base=api_base,
             api_key=api_key,
@@ -219,7 +241,10 @@ def get_databricks_model_serving_client_wrapper(
             headers=headers,
         )
     elif http_handler is not None:
-        http_handler = http_handler if isinstance(http_handler, HTTPHandler) else HTTPHandler(timeout=timeout)
+        http_handler = (
+            http_handler if isinstance(http_handler, HTTPHandler)
+            else HTTPHandler(timeout=timeout)
+        )
         return DatabricksModelServingHTTPHandlerWrapper(
             api_base=api_base,
             api_key=api_key,
@@ -379,7 +404,10 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
         elif endpoint_type == "embeddings":
             return f"{self.api_base}/embeddings"
         else:
-            raise DatabricksError(status_code=500, message=f"Invalid endpoint type: {endpoint_type}")
+            raise DatabricksError(
+                status_code=500,
+                message=f"Invalid endpoint type: {endpoint_type}"
+            )
 
     def _build_headers(self) -> Dict[str, str]:
         return {

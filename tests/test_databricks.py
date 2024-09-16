@@ -3,6 +3,7 @@ import httpx
 import json
 import pytest
 import sys
+from typing import Any, Dict
 from unittest.mock import Mock, patch
 
 import litellm
@@ -86,14 +87,8 @@ def test_throws_for_async_request_when_api_base_and_api_key_absent():
     assert err_msg in str(exc)
 
 
-def test_completions_sends_expected_request(monkeypatch):
-    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
-    api_key = "dapimykey"
-    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
-    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
-
-    sync_handler = HTTPHandler()
-    mock_response_json = {
+def mock_chat_response() -> Dict[str, Any]:
+    return {
         "id": "chatcmpl_3f78f09a-489c-4b8d-a587-f162c7497891",
         "object": "chat.completion",
         "created": 1726285449,
@@ -117,13 +112,21 @@ def test_completions_sends_expected_request(monkeypatch):
         },
         "system_fingerprint": None
     }
-      
+
+
+def test_completions_sends_expected_request_with_sync_http_handler(monkeypatch):
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    sync_handler = HTTPHandler()
     mock_response = Mock(spec=httpx.Response)
     mock_response.status_code = 200
-    mock_response.json.return_value = mock_response_json
+    mock_response.json.return_value = mock_chat_response()
 
     expected_response_json = {
-        **mock_response_json,
+        **mock_chat_response(),
         **{
             "model": "databricks/dbrx-instruct-071224",
         }
@@ -137,6 +140,52 @@ def test_completions_sends_expected_request(monkeypatch):
             messages=messages,
             client=sync_handler,
             temperature=0.5,
+        )
+        assert expected_response_json == response.to_dict()
+
+        mock_post.assert_called_once_with(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "model": "dbrx-instruct-071224",
+                "messages": messages,
+                "temperature": 0.5,
+                "stream": False,
+            }),
+        )
+
+
+def test_completions_sends_expected_request_with_async_http_handler(monkeypatch):
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    async_handler = AsyncHTTPHandler()
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = mock_chat_response()
+
+    expected_response_json = {
+        **mock_chat_response(),
+        **{
+            "model": "databricks/dbrx-instruct-071224",
+        }
+    }
+
+    messages = [{"role": "user", "content": "How are you?"}]
+
+    with patch.object(AsyncHTTPHandler, "post", return_value=mock_response) as mock_post:
+        response = asyncio.run(
+            litellm.acompletion(
+                model="databricks/dbrx-instruct-071224",
+                messages=messages,
+                client=async_handler,
+                temperature=0.5,
+            )
         )
         assert expected_response_json == response.to_dict()
 
