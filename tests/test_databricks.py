@@ -282,6 +282,40 @@ def test_completions_sends_expected_request_with_sync_databricks_client(monkeypa
         )
 
 
+def test_embeddings_sends_expected_request_with_sync_http_handler(monkeypatch):
+    base_url = "https://my.workspace.cloud.databricks.com/serving-endpoints"
+    api_key = "dapimykey"
+    monkeypatch.setenv("DATABRICKS_API_BASE", base_url)
+    monkeypatch.setenv("DATABRICKS_API_KEY", api_key)
+
+    sync_handler = HTTPHandler()
+    mock_response = Mock(spec=httpx.Response)
+    mock_response.status_code = 200
+    mock_response.json.return_value = mock_embedding_response()
+
+    inputs = ["Hello", "World"]
+
+    with patch.object(HTTPHandler, "post", return_value=mock_response) as mock_post:
+        response = litellm.embedding(
+            model="databricks/bge-large-en-v1.5",
+            input=inputs,
+            client=sync_handler,
+        )
+        assert response.to_dict() == mock_embedding_response()
+
+        mock_post.assert_called_once_with(
+            f"{base_url}/embeddings",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({
+                "model": "bge-large-en-v1.5",
+                "input": inputs,
+            }),
+        )
+
+
 @pytest.mark.skipif(not databricks_sdk_installed, reason="Databricks SDK not installed")
 @pytest.mark.parametrize("set_base_key", [True, False])
 def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypatch, set_base_key):
@@ -314,7 +348,3 @@ def test_embeddings_sends_expected_request_with_sync_databricks_client(monkeypat
             body={"input": inputs},
             headers=None,
         )
-
-
-
-
