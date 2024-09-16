@@ -9,7 +9,7 @@ from litellm.llms.databricks.exceptions import DatabricksError
 from litellm.llms.databricks.streaming_utils import ModelResponseIterator
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
-from litellm.utils import ModelResponse, Choices, CustomStreamWrapper
+from litellm.utils import ModelResponse, Choices, CustomStreamWrapper, EmbeddingResponse
 from litellm.types.utils import CustomStreamingDecoder
 
 try:
@@ -82,6 +82,46 @@ class DatabricksModelServingClientWrapper:
         else:
             return await self._completion(endpoint_name, messages, optional_params)
 
+    def embedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> ModelResponse:
+        """
+        Send a synchronous embedding request to a Databricks Model Serving endpoint and retrieve a
+        response.
+
+        Args:
+            endpoint_name (str): The name of the endpoint to query.
+            inputs (List[str]): The list of input strings to embed.
+            optional_params (Dict[str, Any]): Optional parameters to include in the request.
+
+        Returns:
+            A response from the endpoint containing embeddings for the specified inputs.
+        """
+        return self._embedding(endpoint_name, inputs, optional_params)
+
+    async def aembedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> ModelResponse:
+        """
+        Send an asynchronous embedding request to a Databricks Model Serving endpoint and retrieve a
+        response.
+
+        Args:
+            endpoint_name (str): The name of the endpoint to query.
+            inputs (List[str]): The list of input strings to embed.
+            optional_params (Dict[str, Any]): Optional parameters to include in the request.
+
+        Returns:
+            A response from the endpoint containing embeddings for the specified inputs.
+        """
+        return await self._embedding(endpoint_name, inputs, optional_params)
+
     @abstractmethod
     def _completion(
         self,
@@ -90,8 +130,8 @@ class DatabricksModelServingClientWrapper:
         optional_params: Dict[str, Any],
     ) -> ModelResponse:
         """
-        Base method for sending a synchronous chat completion request to a Databricks Model Serving
-        endpoint and retrieving a response. This method should be implemented by subclasses.
+        Base method for sending a buffered / standard chat completion request to a Databricks Model
+        Serving endpoint and retrieving a response. This method should be implemented by subclasses.
         """
 
     @abstractmethod
@@ -102,8 +142,20 @@ class DatabricksModelServingClientWrapper:
         optional_params: Dict[str, Any],
     ) -> CustomStreamWrapper:
         """
-        Base method for sending an asynchronous chat completion request to a Databricks Model
+        Base method for sending an streaming chat completion request to a Databricks Model
         Serving endpoint and retrieving a response. This method should be implemented by subclasses.
+        """
+
+    @abstractmethod
+    def _embedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> EmbeddingResponse:
+        """
+        Base method for sending an embeddings request to a Databricks Model Serving
+        endpoint and retrieving a response. This method should be implemented by subclasses.
         """
 
 
@@ -115,9 +167,9 @@ def get_databricks_model_serving_client_wrapper(
     api_key: Optional[str],
     http_handler: Optional[Union[HTTPHandler, AsyncHTTPHandler]],
     timeout: Optional[Union[float, httpx.Timeout]],
-    custom_endpoint: Optional[bool],
     headers: Optional[Dict[str, str]],
-    streaming_decoder: Optional[CustomStreamingDecoder],
+    custom_endpoint: Optional[bool] = False,
+    streaming_decoder: Optional[CustomStreamingDecoder] = None,
 ) -> DatabricksModelServingClientWrapper:
     """
     Obtain a wrapper around a Databricks Model Serving API client that exposes inference APIs
@@ -262,6 +314,23 @@ class DatabricksModelServingWorkspaceClientWrapper(DatabricksModelServingClientW
             logging_obj=self.logging_obj,
         )
 
+    def _embedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> EmbeddingResponse:
+        response = self.client.api_client.do(
+            method="POST",
+            path=f"/serving-endpoints/{endpoint_name}/invocations",
+            headers=self.headers,
+            body={
+                "input": inputs,
+                **optional_params
+            }
+        )
+        return EmbeddingResponse(**response)
+
 class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
     """
     A wrapper around the Databricks Model Serving API client that uses a LiteLLM synchronous
@@ -318,7 +387,7 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
             "Authorization": f"Bearer {self.api_key}"
         }
 
-    def _prepare_data(
+    def _prepare_completions_data(
         self,
         endpoint_name: str,
         messages: List[Dict[str, str]],
@@ -327,6 +396,18 @@ class DatabricksModelServingHandlerWrapper(DatabricksModelServingClientWrapper):
         return {
             "model": endpoint_name,
             "messages": messages,
+            **optional_params,
+        }
+
+    def _prepare_embeddings_data(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "model": endpoint_name,
+            "inputs": inputs,
             **optional_params,
         }
 
@@ -352,7 +433,7 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ) -> ModelResponse:
-        data = self._prepare_data(endpoint_name, messages, optional_params)
+        data = self._prepare_completions_data(endpoint_name, messages, optional_params)
         response = None
         try:
             response = self.http_handler.post(
@@ -371,7 +452,7 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ):
-        data = self._prepare_data(endpoint_name, messages, optional_params)
+        data = self._prepare_completions_data(endpoint_name, messages, optional_params)
 
         def make_call(client: HTTPHandler):
             response = None
@@ -403,6 +484,26 @@ class DatabricksModelServingHTTPHandlerWrapper(DatabricksModelServingHandlerWrap
             logging_obj=self.logging_obj,
         )
 
+    def _embedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> EmbeddingResponse:
+        data = self._prepare_embeddings_data(endpoint_name, inputs, optional_params)
+
+        response = None
+        try:
+            response = self.http_handler.post(
+                self._get_api_base(endpoint_type="embeddings"),
+                headers=self._build_headers(),
+                data=json.dumps(data)
+            )
+            response.raise_for_status()
+            return EmbeddingResponse(**response.json())
+        except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
+            self._handle_errors(e, response)
+
 
 class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandlerWrapper):
     """
@@ -417,7 +518,7 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any] = None
     ) -> ModelResponse:
-        data = self._prepare_data(endpoint_name, messages, optional_params)
+        data = self._prepare_completions_data(endpoint_name, messages, optional_params)
         response = None
         try:
             response = await self.http_handler.post(
@@ -437,7 +538,7 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
         messages: List[Dict[str, str]],
         optional_params: Dict[str, Any],
     ):
-        data = self._prepare_data(endpoint_name, messages, optional_params)
+        data = self._prepare_completions_data(endpoint_name, messages, optional_params)
 
         async def make_call(client: AsyncHTTPHandler):
             response = None
@@ -468,3 +569,23 @@ class DatabricksModelServingAsyncHTTPHandlerWrapper(DatabricksModelServingHandle
             custom_llm_provider=self.custom_llm_provider,
             logging_obj=self.logging_obj,
         )
+
+    async def _embedding(
+        self,
+        endpoint_name: str,
+        inputs: List[str],
+        optional_params: Dict[str, Any],
+    ) -> EmbeddingResponse:
+        data = self._prepare_embeddings_data(endpoint_name, inputs, optional_params)
+
+        response = None
+        try:
+            response = await self.http_handler.post(
+                self._get_api_base(endpoint_type="embeddings"),
+                headers=self._build_headers(),
+                data=json.dumps(data)
+            )
+            response.raise_for_status()
+            return EmbeddingResponse(**response.json())
+        except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
+            self._handle_errors(e, response)
